@@ -55,7 +55,7 @@ ACCENT  = "#3A3A3C"     # 강조 (거의 무채색)
 OK      = "#1F7A5C"     # 완료 체크
 WARN    = "#8A6D3B"     # 경고 문구 (위험색 아님)
 
-WIN_W, WIN_H = 560, 420        # 고정 크기 (APP_UI 2항)
+WIN_W, WIN_H = 560, 640        # 고정 크기 (설명 문구가 들어가 세로를 늘림)
 
 FONT     = ("AppleSDGothicNeo", 13)
 FONT_SM  = ("AppleSDGothicNeo", 11)
@@ -409,7 +409,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("맥 파일 상태 검사")
+        self.title("맥 파일 상태 조사")
         self.configure(bg=BG)
         self.resizable(False, False)
         self._center(WIN_W, WIN_H)
@@ -450,29 +450,43 @@ class App(tk.Tk):
     def _make_start(self):
         self._clear()
         root = tk.Frame(self, bg=BG)
-        root.pack(fill="both", expand=True, padx=28, pady=24)
+        root.pack(fill="both", expand=True, padx=28, pady=22)
 
-        tk.Label(root, text="맥 파일 상태 검사", font=FONT_BIG,
-                 bg=BG, fg=INK).pack(pady=(18, 6))
-        tk.Label(root, text="파일이 어떤 상태인지 숫자로만 셉니다",
-                 font=FONT, bg=BG, fg=SUB).pack(pady=(0, 16))
+        tk.Label(root, text="맥 파일 상태 조사", font=FONT_BIG,
+                 bg=BG, fg=INK).pack(pady=(10, 2))
+        tk.Label(root, text="참여해 주셔서 감사합니다 🙏", font=FONT,
+                 bg=BG, fg=SUB).pack(pady=(0, 12))
 
-        # 안심 문구는 버튼보다 위에 (누르기 전에 읽습니다)
+        # 무엇을 왜 하는지 — 앱 설명
+        intro = ("디자이너의 맥에는 몇 년간 작업 파일이 쌓입니다. 저희는 이걸 "
+                 "AI가 분석해서 자동으로 정리하고 용량을 확보해 주는 프로그램을 "
+                 "만들고 있어요.\n\n"
+                 "그 프로그램을 잘 만들려면 실제 디자이너 맥북의 '파일 상태' "
+                 "데이터가 필요합니다. 이 앱이 그 정보를 조사해 문서 하나로 "
+                 "정리해 드립니다.")
+        tk.Label(root, text=intro, font=FONT_SM, bg=BG, fg=INK,
+                 justify="left", wraplength=WIN_W - 72).pack(fill="x", pady=(0, 12))
+
+        # 익명화·안전 안내 (누르기 전에 읽는 안심 문구)
         card = self._card(root)
-        card.pack(fill="x", pady=(0, 6))
-        for line in ("· 파일을 하나도 바꾸지 않습니다",
+        card.pack(fill="x", pady=(0, 8))
+        for line in ("· 파일을 하나도 바꾸지 않습니다 (읽기만 해요)",
                      "· 지우거나 옮기지 않습니다",
-                     "· 결과에 파일 이름이 안 들어갑니다"):
-            tk.Label(card, text=line, font=FONT, bg=CARD, fg=INK,
-                     anchor="w").pack(fill="x", padx=16, pady=3)
+                     "· 모든 내용은 익명 처리됩니다 — 파일 이름은 안 들어가요",
+                     "· 파일 종류·용량 같은 통계만 문서로 정리됩니다"):
+            tk.Label(card, text=line, font=FONT_SM, bg=CARD, fg=INK,
+                     anchor="w", wraplength=WIN_W - 104,
+                     justify="left").pack(fill="x", padx=16, pady=3)
+        tk.Frame(card, bg=CARD, height=2).pack()
 
         # 권한 안내 (APP_UI 6항) — 미리 알립니다
         tk.Label(root,
-                 text="※ '문서 폴더에 접근하려 합니다' 창이 뜨면 [허용] 을 눌러 주세요.\n"
-                      "   안 누르면 그 폴더는 못 셉니다.",
-                 font=FONT_SM, bg=BG, fg=SUB, justify="left").pack(pady=(10, 12))
+                 text="※ '문서/바탕화면 폴더에 접근하려 합니다' 창이 뜨면 [허용] 을 "
+                      "눌러 주세요. 안 누르면 그 폴더는 못 셉니다.",
+                 font=FONT_SM, bg=BG, fg=SUB, justify="left",
+                 wraplength=WIN_W - 72).pack(pady=(8, 10))
 
-        self.start_btn = tk.Button(root, text="  검사 시작  ", font=FONT_H,
+        self.start_btn = tk.Button(root, text="  조사 시작  ", font=FONT_H,
                                    command=self._start, relief="flat",
                                    bg=ACCENT, fg="white",
                                    activebackground=INK, activeforeground="white",
@@ -480,8 +494,9 @@ class App(tk.Tk):
         self.start_btn.pack(pady=(2, 4))
 
         # 예상 시간은 버튼 아래 (눌러도 되는지 판단한 뒤 보는 정보)
-        self.est_label = tk.Label(root, text="약 1분 걸립니다 (파일이 많으면 더 걸립니다)",
-                                  font=FONT_SM, bg=BG, fg=SUB)
+        self.est_label = tk.Label(
+            root, text="약 1분 걸립니다 (파일이 많으면 더 오래 걸릴 수 있어요)",
+            font=FONT_SM, bg=BG, fg=SUB)
         self.est_label.pack()
 
         self.selftest_label = tk.Label(root, text="", font=FONT_SM, bg=BG, fg=SUB)
@@ -688,8 +703,8 @@ class App(tk.Tk):
         root.pack(fill="both", expand=True, padx=28, pady=20)
 
         self._check_mark(root)
-        tk.Label(root, text="검사가 끝났습니다", font=FONT_BIG,
-                 bg=BG, fg=INK).pack(pady=(4, 14))
+        tk.Label(root, text="스캔 완료!", font=FONT_BIG,
+                 bg=BG, fg=INK).pack(pady=(4, 10))
 
         card = self._card(root)
         card.pack(fill="x")
@@ -703,20 +718,33 @@ class App(tk.Tk):
             tk.Label(root,
                      text=f"⚠ {info['unread']}곳을 못 읽었습니다 (권한 없음)\n"
                           "   시스템 설정 → 개인정보 보호 및 보안 → 전체 디스크 접근",
-                     font=FONT_SM, bg=BG, fg=WARN, justify="left").pack(pady=(10, 0))
+                     font=FONT_SM, bg=BG, fg=WARN, justify="left").pack(pady=(8, 0))
 
         self.report_path = info["report"]
-        tk.Label(root, text="결과가 바탕화면에 있습니다", font=FONT,
+        tk.Label(root, text="보고서 파일이 바탕화면에 만들어졌어요.", font=FONT,
                  bg=BG, fg=INK).pack(pady=(12, 0))
         tk.Label(root, text=os.path.basename(self.report_path), font=FONT_SM,
-                 bg=BG, fg=SUB).pack(pady=(0, 8))
+                 bg=BG, fg=SUB).pack(pady=(0, 2))
+        tk.Label(root, text="이 파일을 개발자에게 보내 주세요!", font=FONT_H,
+                 bg=BG, fg=ACCENT).pack(pady=(2, 8))
 
         self._open_buttons(root, primary=True)
 
+        # 감사·보상 (보내주시면 이렇게 보답드려요)
+        thanks = self._card(root)
+        thanks.pack(fill="x", pady=(12, 0))
+        tk.Label(thanks,
+                 text="도움 주셔서 정말 감사합니다 🙏\n"
+                      "프로그램이 완성되면 무료로 쓰실 수 있게 해 드리고,\n"
+                      "스타벅스 기프티콘도 보내 드릴게요! ☕",
+                 font=FONT_SM, bg=CARD, fg=INK, justify="center",
+                 wraplength=WIN_W - 104).pack(fill="x", padx=16, pady=10)
+
         tk.Label(root,
-                 text="보내시기 전에 열어서 확인해 보셔도 됩니다.\n"
-                      "파일 이름은 들어 있지 않습니다.",
-                 font=FONT_SM, bg=BG, fg=SUB, justify="center").pack(pady=(12, 0))
+                 text="보내시기 전에 열어서 확인해 보셔도 됩니다. "
+                      "파일 이름은 들어 있지 않아요.",
+                 font=FONT_SM, bg=BG, fg=SUB, justify="center",
+                 wraplength=WIN_W - 72).pack(pady=(10, 0))
 
     def _check_mark(self, parent):
         """완료 표시 — 원 세 겹 + 흰 체크 (APP_UI 4항)."""
@@ -748,10 +776,14 @@ class App(tk.Tk):
                  font=FONT, bg=BG, fg=INK, justify="left").pack(anchor="w")
 
         self.report_path = info["report"]
-        tk.Label(root, text="\n여기까지의 결과도 저장했습니다.", font=FONT,
+        tk.Label(root, text="\n여기까지의 결과도 바탕화면에 저장했습니다.", font=FONT,
                  bg=BG, fg=INK, justify="left").pack(anchor="w")
         tk.Label(root, text=os.path.basename(self.report_path), font=FONT_SM,
-                 bg=BG, fg=SUB).pack(anchor="w", pady=(2, 18))
+                 bg=BG, fg=SUB).pack(anchor="w", pady=(2, 4))
+        tk.Label(root,
+                 text="여기까지만이라도 개발자에게 보내 주시면 큰 도움이 됩니다!",
+                 font=FONT, bg=BG, fg=ACCENT, justify="left").pack(
+                     anchor="w", pady=(0, 16))
 
         self._open_buttons(root, primary=True, with_close=True)
 
