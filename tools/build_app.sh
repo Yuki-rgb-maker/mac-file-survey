@@ -72,17 +72,41 @@ echo "── 이전 산출물 지우기 ─────────────�
 rm -rf build dist
 
 echo "── py2app 빌드 ($PYTHON) ───────────────────────────"
+# ⚠ py2app 최신 버전은 마지막에 번들을 ad-hoc 서명합니다. 그런데
+#   python.org 의 Tcl/Tk 안에는 codesign 이 못 다루는 정적 라이브러리
+#   (*.a, 예: libtclstub.a)가 들어 있어 이 서명이 '실패'합니다.
+#   그러면 앱에 '깨진 서명'이 남고, Apple Silicon 은 서명이 없는 것보다
+#   깨진 서명을 더 싫어해서 실행 즉시 죽입니다(Code Signature Invalid).
+#   → 여기서 실패해도 멈추지 않고, 아래에서 *.a 를 지운 뒤 우리가 직접
+#     ad-hoc 서명합니다. (개발자 계정 없이 되는 무료 서명입니다)
+set +e
 "$PYTHON" setup.py py2app
+PY2APP_RC=$?
+set -e
 
 APP_PATH="dist/${APP_NAME}.app"
-[[ -d "$APP_PATH" ]] || { echo "✗ .app 을 못 만들었습니다."; exit 1; }
+[[ -d "$APP_PATH" ]] || {
+  echo "✗ .app 을 못 만들었습니다 (py2app 종료코드 $PY2APP_RC)."; exit 1;
+}
+if [[ $PY2APP_RC -ne 0 ]]; then
+  echo "  (py2app 이 마지막 서명에서 멈췄습니다 — 예상된 일입니다. 아래에서 직접 서명합니다)"
+fi
 
-# 번들 안에서 엔진·사전이 실제로 import 되는지 한 번 돌려 확인합니다
+echo "── 서명 정리 (무료 ad-hoc) ─────────────────────────"
+# codesign 이 못 다루는 정적 라이브러리 제거 (런타임에 필요 없습니다)
+find "$APP_PATH" -name '*.a' -print -delete || true
+# 남은 확장 속성 정리 후, 번들 전체를 ad-hoc 로 다시 서명
+xattr -cr "$APP_PATH" || true
+codesign --force --deep --sign - "$APP_PATH"
+codesign --verify --deep --strict --verbose=2 "$APP_PATH" || {
+  echo "  ⚠ 서명 검증에 경고가 있지만, 실행에는 보통 문제 없습니다."
+}
+
+# 번들 안에서 엔진·사전이 실제로 import 되는지 확인합니다
 # (APP_UI 9항 — 번들에 lang_ko 가 들어갔나 / import lang_ko 가 되나).
 echo "── 번들 자가진단 ───────────────────────────────────"
 BIN="${APP_PATH}/Contents/MacOS/p0_app"
 if [[ -x "$BIN" ]]; then
-  # p0_app 은 창을 띄우므로, 여기서는 번들 파이썬으로 엔진만 확인합니다.
   echo "  (엔진 selftest 는 위에서 통과했습니다. 앱은 실행 시 화면에서 다시 확인합니다)"
 fi
 
@@ -98,8 +122,9 @@ echo "✓ 다 됐습니다."
 echo "   앱 :  ${APP_PATH}"
 echo "   zip:  dist/${ZIP_NAME}   ← 이 파일을 배포_안내.md 와 함께 보내세요"
 echo ""
-echo "  ※ 서명·공증을 안 했으므로 받는 분은 첫 실행 때 Gatekeeper 안내가"
-echo "    필요합니다. 배포_안내.md 를 함께 전달하세요."
+echo "  ※ 무료 ad-hoc 서명만 했습니다(정식 서명·공증은 P5). 받는 분은"
+echo "    첫 실행 때 Gatekeeper 안내가 필요합니다 — 배포_안내.md 를 함께 보내세요."
+echo "    (혹시 '손상되었다'고 뜨면 배포_안내.md 의 마지막 항목을 참고)"
 
 # ═════════════════════════════════════════════════════════════
 #  P5 — 서명·공증 (개발자 계정 이후에만 켭니다)
