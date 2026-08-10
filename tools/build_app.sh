@@ -31,30 +31,48 @@ if [[ "$(uname)" != "Darwin" ]]; then
   exit 1
 fi
 
+# 어느 파이썬으로 빌드할지. .app 안에 들어가는 Tk(화면 엔진)는 이 파이썬 걸
+# 따라갑니다. macOS 시스템/Xcode 파이썬은 옛 Tk(8.5)라 글자가 안 보입니다.
+#   → python.org 정식 파이썬(Tk 8.6)으로 빌드하세요.
+#   다른 파이썬으로 빌드하려면:  PYTHON=python3.12 bash tools/build_app.sh
+PYTHON="${PYTHON:-python3}"
+
 # 필요한 파일이 다 있는지 (엔진·사전이 빠지면 앱이 안 돕니다)
 for f in p0_app.py p0_survey.py lang_ko.py setup.py; do
   [[ -f "$f" ]] || { echo "✗ $f 가 없습니다."; exit 1; }
 done
 
+# 화면 엔진(Tk) 버전 확인 — 8.5 면 동료들 화면이 깨집니다.
+echo "── 화면 엔진(Tk) 확인 ──────────────────────────────"
+TKV="$("$PYTHON" -c 'import tkinter; print(tkinter.TkVersion)' 2>/dev/null || echo '?')"
+echo "  $PYTHON 의 Tk: $TKV"
+if [[ "$TKV" == "8.5" || "$TKV" == "?" ]]; then
+  echo "  ⚠ 옛 Tk(8.5) 입니다. 이대로 빌드하면 글자·카드가 안 보입니다."
+  echo "    python.org 에서 최신 Python 3 을 설치한 뒤,"
+  echo "    새 터미널에서:  PYTHON=python3.12 bash tools/build_app.sh"
+  read -r -p "  그래도 계속할까요? [y/N] " ans
+  [[ "$ans" == "y" || "$ans" == "Y" ]] || { echo "  멈췄습니다."; exit 1; }
+fi
+
 # 엔진이 최신인지 먼저 확인합니다 (APP_UI 8항).
 echo "── 자가진단 (--selftest) ───────────────────────────"
-python3 p0_survey.py --selftest || {
+"$PYTHON" p0_survey.py --selftest || {
   echo "✗ 자가진단 실패 — 옛 엔진 파일입니다. 최신본으로 바꾸고 다시 빌드하세요."
   exit 1
 }
 
 # py2app 준비 (없으면 설치)
 echo "── py2app 확인 ─────────────────────────────────────"
-python3 -c "import py2app" 2>/dev/null || {
+"$PYTHON" -c "import py2app" 2>/dev/null || {
   echo "  py2app 이 없어 설치합니다…"
-  python3 -m pip install --user py2app
+  "$PYTHON" -m pip install --user py2app
 }
 
 echo "── 이전 산출물 지우기 ──────────────────────────────"
 rm -rf build dist
 
-echo "── py2app 빌드 ─────────────────────────────────────"
-python3 setup.py py2app
+echo "── py2app 빌드 ($PYTHON) ───────────────────────────"
+"$PYTHON" setup.py py2app
 
 APP_PATH="dist/${APP_NAME}.app"
 [[ -d "$APP_PATH" ]] || { echo "✗ .app 을 못 만들었습니다."; exit 1; }

@@ -857,6 +857,28 @@ class App(tk.Tk):
 
 
 def main():
+    # ── 옛 Tk 경고 ───────────────────────────────────────────
+    #   macOS 에 딸린 시스템 Tk(8.5)는 유명한 버그가 있습니다:
+    #   버튼은 그려지는데 글자·카드·프로그레스바가 안 그려집니다.
+    #   (Xcode·시스템 파이썬이 이 옛 Tk 를 씁니다.)
+    #   python.org 정식 파이썬(Tk 8.6)으로 돌리면 정상입니다.
+    #   빌드된 .app 은 빌드에 쓴 파이썬의 Tk 를 담으므로, 빌드도
+    #   python.org 파이썬으로 하면 동료들 화면도 정상입니다.
+    if tk.TkVersion < 8.6:
+        msg = (f"화면 엔진(Tk)이 옛 버전입니다: {tk.TkVersion}\n\n"
+               "이 버전은 글자·카드가 안 보이는 버그가 있어요.\n"
+               "python.org 에서 최신 Python 3 을 설치해\n"
+               "새 터미널에서 다시 실행해 주세요 (Tk 8.6).")
+        print("\n  ⚠ " + msg.replace("\n", "\n    ") + "\n", flush=True)
+        try:
+            from tkinter import messagebox
+            r = tk.Tk(); r.withdraw()
+            messagebox.showwarning("옛 화면 엔진(Tk 8.5)", msg)
+            r.destroy()
+        except Exception:
+            pass
+        # 그래도 실행은 해 봅니다(경고만 하고 막지는 않습니다).
+
     App().mainloop()
 
 
