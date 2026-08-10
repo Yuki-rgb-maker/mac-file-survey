@@ -92,15 +92,46 @@ if [[ $PY2APP_RC -ne 0 ]]; then
   echo "  (py2app 이 마지막 서명에서 멈췄습니다 — 예상된 일입니다. 아래에서 직접 서명합니다)"
 fi
 
-echo "── 서명 정리 (무료 ad-hoc) ─────────────────────────"
+echo "── 서명 정리 (무료 ad-hoc, 안쪽부터) ────────────────"
 # codesign 이 못 다루는 정적 라이브러리 제거 (런타임에 필요 없습니다)
-find "$APP_PATH" -name '*.a' -print -delete || true
-# 남은 확장 속성 정리 후, 번들 전체를 ad-hoc 로 다시 서명
+find "$APP_PATH" -name '*.a' -print -delete 2>/dev/null || true
 xattr -cr "$APP_PATH" || true
-codesign --force --deep --sign - "$APP_PATH"
-codesign --verify --deep --strict --verbose=2 "$APP_PATH" || {
-  echo "  ⚠ 서명 검증에 경고가 있지만, 실행에는 보통 문제 없습니다."
-}
+
+# ⚠ '--deep' 로 한꺼번에 서명하면 최신 macOS 에서 codesign 이
+#   Bus error 로 죽는 일이 있습니다(Tcl/Tk·Python 프레임워크).
+#   그래서 안쪽부터 하나씩 서명한 뒤 마지막에 앱 번들을 서명합니다.
+sign() { codesign --force --timestamp=none --sign - "$1"; }
+
+# 1) 개별 Mach-O (.so / .dylib)
+find "$APP_PATH" \( -name '*.so' -o -name '*.dylib' \) -type f -print0 \
+  | while IFS= read -r -d '' f; do sign "$f" || echo "  (경고: $f)"; done
+
+# 2) 프레임워크: 버전별 본체 바이너리 → 프레임워크 번들 순
+for fw in "$APP_PATH"/Contents/Frameworks/*.framework; do
+  [[ -d "$fw" ]] || continue
+  base="$(basename "$fw" .framework)"
+  for v in "$fw"/Versions/*/; do
+    [[ -f "$v$base" ]] && { sign "$v$base" || echo "  (경고: $v$base)"; }
+  done
+  sign "$fw" || echo "  (경고: $fw)"
+done
+
+# 3) 메인 실행 파일들
+for m in "$APP_PATH"/Contents/MacOS/*; do
+  [[ -f "$m" ]] && { sign "$m" || echo "  (경고: $m)"; }
+done
+
+# 4) 마지막에 앱 번들 전체 (--deep 없이)
+if ! sign "$APP_PATH"; then
+  echo "✗ 앱 번들 서명 실패."
+  echo "  Python 3.14 는 아주 최신이라 py2app 궁합 문제일 수 있습니다."
+  echo "  python.org 에서 Python 3.12 를 설치해 다시 시도해 보세요:"
+  echo "    PYTHON=python3.12 bash tools/build_app.sh"
+  exit 1
+fi
+codesign --verify --strict "$APP_PATH" \
+  && echo "  서명 검증 OK" \
+  || echo "  ⚠ 검증 경고 — 실행엔 보통 문제 없습니다."
 
 # 번들 안에서 엔진·사전이 실제로 import 되는지 확인합니다
 # (APP_UI 9항 — 번들에 lang_ko 가 들어갔나 / import lang_ko 가 되나).
