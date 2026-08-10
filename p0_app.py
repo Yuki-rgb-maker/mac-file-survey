@@ -259,9 +259,29 @@ class SurveyWorker(threading.Thread):
         a["ai"] = log.run("AI 생성 흔적", lambda: engine.probe_ai_metadata(sv.files))
         self._check_stop()
 
-        # 외부 프로세스(qlmanage·sips) — 가장 느립니다.
+        # 외부 프로세스(qlmanage·sips) — 가장 느립니다(실측 58%+37%).
+        #   이 두 단계는 파일마다 외부 프로세스를 부르는데 진행 콜백이 없어서,
+        #   그대로 두면 '멈추기'가 단계가 끝날 때까지 안 듣습니다(최대 몇 분).
+        #   엔진 파일은 건드리지 않고, 실행하는 동안에만 두 헬퍼를 감싸
+        #   매 파일 직전에 멈춤을 확인합니다. 멈추면 KeyboardInterrupt 로
+        #   되감겨 '여기까지'가 보고서로 남습니다.
         workdir = os.path.join(engine.tempfile.gettempdir(), "p0_probe")
         os.makedirs(workdir, exist_ok=True)
+        orig_ql = engine.quicklook_thumbnail_ok
+        orig_sips = engine._sips_to_small_bmp
+
+        def ql_stopcheck(path, wd, _o=orig_ql):
+            if self.stop_flag.is_set():
+                raise KeyboardInterrupt
+            return _o(path, wd)
+
+        def sips_stopcheck(path, wd, side=9, _o=orig_sips):
+            if self.stop_flag.is_set():
+                raise KeyboardInterrupt
+            return _o(path, wd, side)
+
+        engine.quicklook_thumbnail_ok = ql_stopcheck
+        engine._sips_to_small_bmp = sips_stopcheck
         try:
             a["thumbs"] = log.run("썸네일 (qlmanage)",
                                   lambda: engine.probe_thumbnails(sv.files, workdir),
@@ -271,6 +291,8 @@ class SurveyWorker(threading.Thread):
                                  lambda: engine.probe_phash_families(sv.files, workdir),
                                  note="외부 프로세스")
         finally:
+            engine.quicklook_thumbnail_ok = orig_ql      # 원래대로 되돌립니다
+            engine._sips_to_small_bmp = orig_sips
             engine.shutil.rmtree(workdir, ignore_errors=True)
 
         return self._fill_none(a), sv
@@ -845,8 +867,12 @@ class App(tk.Tk):
         self._shown = {}
         self._last_left = ""
         self.start_time = time.time()
-        self._make_progress()
+        # ⚠ worker 를 _make_progress 보다 먼저 만듭니다.
+        #   _make_progress 안에서 시계(_tick_clock)가 도는데, 그 시계는
+        #   worker 가 있어야 계속 돕니다. 순서가 바뀌면 시계가 첫 호출에서
+        #   바로 멈춰 '0초 경과' 에 붙박입니다(멈춘 것처럼 보임).
         self.worker = SurveyWorker(self.q, self.stop_flag, self.heavy_gate)
+        self._make_progress()
         self.worker.start()
 
     def _stop(self):
