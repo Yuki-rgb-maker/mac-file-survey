@@ -55,7 +55,7 @@ ACCENT  = "#3A3A3C"     # 강조 (거의 무채색)
 OK      = "#1F7A5C"     # 완료 체크
 WARN    = "#8A6D3B"     # 경고 문구 (위험색 아님)
 
-WIN_W, WIN_H = 560, 640        # 고정 크기 (설명 문구가 들어가 세로를 늘림)
+WIN_W, WIN_H = 560, 680        # 고정 크기 (설명·권한 안내가 들어가 세로를 늘림)
 
 FONT     = ("AppleSDGothicNeo", 13)
 FONT_SM  = ("AppleSDGothicNeo", 11)
@@ -516,16 +516,30 @@ class App(tk.Tk):
                      justify="left").pack(fill="x", padx=16, pady=3)
         tk.Frame(card, bg=CARD, height=2).pack()
 
-        # 권한 안내 (APP_UI 6항) — 미리 알립니다
+        # 권한 안내 (APP_UI 6항) — '전체 디스크 접근' 한 번 켜기
         #   ad-hoc 서명 앱은 폴더별 '허용' 이 저장되지 않아 계속 다시 묻습니다.
         #   그래서 '전체 디스크 접근' 을 한 번 켜는 쪽을 권합니다(홈 전체를
         #   훑는 도구라 이게 맞는 권한이기도 합니다). 읽기 전용입니다.
-        tk.Label(root,
-                 text="※ 폴더 접근 창이 여러 번 뜨면, 시스템 설정 → 개인정보 보호 및 "
-                      "보안 → '전체 디스크 접근' 에 이 앱을 추가(＋)하고 다시 여세요. "
-                      "한 번만 하면 됩니다. (앱은 읽기만 합니다)",
-                 font=FONT_SM, bg=BG, fg=SUB, justify="left",
-                 wraplength=WIN_W - 72).pack(pady=(8, 10))
+        fda = self._card(root)
+        fda.pack(fill="x", pady=(8, 6))
+        tk.Label(fda, text="처음이면 '전체 디스크 접근' 을 한 번 켜 주세요 (읽기 전용)",
+                 font=FONT_SM, bg=CARD, fg=INK, anchor="w",
+                 wraplength=WIN_W - 104, justify="left").pack(
+                     fill="x", padx=16, pady=(10, 4))
+        for line in ("1. 아래 [전체 디스크 접근 열기] 를 누르세요",
+                     "2. 목록에서 ＋ 로 '맥 파일 검사' 를 추가하고 스위치를 켜세요",
+                     "3. 이 앱으로 돌아와 [조사 시작] 을 누르세요"):
+            tk.Label(fda, text=line, font=FONT_SM, bg=CARD, fg=SUB, anchor="w",
+                     wraplength=WIN_W - 104, justify="left").pack(
+                         fill="x", padx=16, pady=1)
+        tk.Label(fda, text="안 켜면 폴더 접근 창이 여러 번 떠요. 켜면 안 뜹니다.",
+                 font=FONT_SM, bg=CARD, fg=SUB, anchor="w").pack(
+                     fill="x", padx=16, pady=(4, 2))
+        tk.Button(fda, text="전체 디스크 접근 열기", font=FONT_SM, relief="flat",
+                  bg=BG, fg=INK, highlightbackground=LINE, highlightthickness=1,
+                  padx=12, pady=4, cursor="pointinghand",
+                  command=self._open_fda_settings).pack(anchor="w",
+                                                        padx=16, pady=(4, 12))
 
         self.start_btn = tk.Button(root, text="  조사 시작  ", font=FONT_H,
                                    command=self._start, relief="flat",
@@ -873,6 +887,12 @@ class App(tk.Tk):
                       highlightbackground=LINE, highlightthickness=1,
                       padx=16, pady=6, cursor="pointinghand",
                       command=self.destroy).pack(side="left", padx=6)
+
+    def _open_fda_settings(self):
+        """시스템 설정의 '전체 디스크 접근' 화면을 바로 엽니다."""
+        engine.subprocess.run(
+            ["open", "x-apple.systempreferences:"
+             "com.apple.preference.security?Privacy_AllFilesAccess"])
 
     def _open_report(self):
         engine.subprocess.run(["open", self.report_path])
