@@ -1,0 +1,25 @@
+# ── 개인 정보가 담깁니다. 절대 커밋하지 마세요 ──────────────
+#
+#   p0_report.txt 에는 실제 파일 이름이 들어갑니다
+#   (예: '박시우_정서적필로티 레이아웃.psd', 'Documents/미스코리아/')
+#
+#   기준선을 레포에 두려면 --share 로 만든 것을 쓰세요:
+#     python3 p0_survey.py --share --yes --out baseline.txt
+#
+p0_report.txt
+p0_testset.md
+p0_cache.json
+p0_steps.log
+p0_cache.json.tmp
+맥검사_*.txt
+맥검사_기록*.log
+
+# ── 빌드 산출물 ──────────────────────────────────────────
+build/
+dist/
+*.app
+*.dmg
+*.zip
+__pycache__/
+.venv/
+.DS_Store
