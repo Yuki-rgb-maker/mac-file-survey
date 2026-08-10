@@ -161,8 +161,41 @@ class SurveyWorker(threading.Thread):
                       elapsed=info.get("elapsed", 0), left=info.get("left", 0))
         # step_done 는 화면에 따로 안 씁니다 (찾은 것으로 대신 보여줌).
 
+    # ── 멈추기를 모든 단계에서 듣게 하기 ────────────────────
+    #   틱(진행 콜백)이 없는 단계(AI 흔적·PSD·백업 등)는 그대로 두면
+    #   단계가 끝날 때까지 멈추기가 안 듣습니다. 엔진 파일은 건드리지 않고,
+    #   파일을 하나씩 읽는 저수준 함수들을 실행 중에만 감싸서, 매 파일 직전에
+    #   멈춤을 확인합니다. 멈추면 KeyboardInterrupt 로 되감깁니다.
+    _READER_FNS = ("read_xmp", "read_psd_header", "read_png_text_keys",
+                   "has_c2pa", "read_blend_header", "quicklook_thumbnail_ok",
+                   "_sips_to_small_bmp", "head_hash", "tail_hash")
+
+    def _install_stop_checks(self):
+        self._orig_fns = {}
+        flag = self.stop_flag
+
+        def make(orig):
+            def wrapped(*a, **k):
+                if flag.is_set():
+                    raise KeyboardInterrupt
+                return orig(*a, **k)
+            return wrapped
+
+        for name in self._READER_FNS:
+            orig = getattr(engine, name, None)
+            if orig is None:
+                continue
+            self._orig_fns[name] = orig
+            setattr(engine, name, make(orig))
+
+    def _restore_stop_checks(self):
+        for name, orig in getattr(self, "_orig_fns", {}).items():
+            setattr(engine, name, orig)
+        self._orig_fns = {}
+
     def run(self):
         engine.PROGRESS_HOOK = self._hook
+        self._install_stop_checks()
         t0 = time.time()
         stopped = False
         try:
@@ -173,10 +206,12 @@ class SurveyWorker(threading.Thread):
         except Exception as e:
             # 실패를 숨기지 않습니다 (DECISIONS 7항).
             engine.PROGRESS_HOOK = None
+            self._restore_stop_checks()
             self.emit("error", message=f"{type(e).__name__}: {e}")
             return
         finally:
             engine.PROGRESS_HOOK = None
+            self._restore_stop_checks()
 
         # 끝났든 멈췄든, 여기까지의 결과를 보고서로 남깁니다 (APP_UI 5항).
         try:
@@ -260,28 +295,10 @@ class SurveyWorker(threading.Thread):
         self._check_stop()
 
         # 외부 프로세스(qlmanage·sips) — 가장 느립니다(실측 58%+37%).
-        #   이 두 단계는 파일마다 외부 프로세스를 부르는데 진행 콜백이 없어서,
-        #   그대로 두면 '멈추기'가 단계가 끝날 때까지 안 듣습니다(최대 몇 분).
-        #   엔진 파일은 건드리지 않고, 실행하는 동안에만 두 헬퍼를 감싸
-        #   매 파일 직전에 멈춤을 확인합니다. 멈추면 KeyboardInterrupt 로
-        #   되감겨 '여기까지'가 보고서로 남습니다.
+        #   여기서 부르는 저수준 함수들은 run() 에서 이미 감싸 두어,
+        #   매 파일 직전에 멈춤을 확인합니다(멈추기가 이 단계에서도 듣습니다).
         workdir = os.path.join(engine.tempfile.gettempdir(), "p0_probe")
         os.makedirs(workdir, exist_ok=True)
-        orig_ql = engine.quicklook_thumbnail_ok
-        orig_sips = engine._sips_to_small_bmp
-
-        def ql_stopcheck(path, wd, _o=orig_ql):
-            if self.stop_flag.is_set():
-                raise KeyboardInterrupt
-            return _o(path, wd)
-
-        def sips_stopcheck(path, wd, side=9, _o=orig_sips):
-            if self.stop_flag.is_set():
-                raise KeyboardInterrupt
-            return _o(path, wd, side)
-
-        engine.quicklook_thumbnail_ok = ql_stopcheck
-        engine._sips_to_small_bmp = sips_stopcheck
         try:
             a["thumbs"] = log.run("썸네일 (qlmanage)",
                                   lambda: engine.probe_thumbnails(sv.files, workdir),
@@ -291,8 +308,6 @@ class SurveyWorker(threading.Thread):
                                  lambda: engine.probe_phash_families(sv.files, workdir),
                                  note="외부 프로세스")
         finally:
-            engine.quicklook_thumbnail_ok = orig_ql      # 원래대로 되돌립니다
-            engine._sips_to_small_bmp = orig_sips
             engine.shutil.rmtree(workdir, ignore_errors=True)
 
         return self._fill_none(a), sv
@@ -502,9 +517,13 @@ class App(tk.Tk):
         tk.Frame(card, bg=CARD, height=2).pack()
 
         # 권한 안내 (APP_UI 6항) — 미리 알립니다
+        #   ad-hoc 서명 앱은 폴더별 '허용' 이 저장되지 않아 계속 다시 묻습니다.
+        #   그래서 '전체 디스크 접근' 을 한 번 켜는 쪽을 권합니다(홈 전체를
+        #   훑는 도구라 이게 맞는 권한이기도 합니다). 읽기 전용입니다.
         tk.Label(root,
-                 text="※ '문서/바탕화면 폴더에 접근하려 합니다' 창이 뜨면 [허용] 을 "
-                      "눌러 주세요. 안 누르면 그 폴더는 못 셉니다.",
+                 text="※ 폴더 접근 창이 여러 번 뜨면, 시스템 설정 → 개인정보 보호 및 "
+                      "보안 → '전체 디스크 접근' 에 이 앱을 추가(＋)하고 다시 여세요. "
+                      "한 번만 하면 됩니다. (앱은 읽기만 합니다)",
                  font=FONT_SM, bg=BG, fg=SUB, justify="left",
                  wraplength=WIN_W - 72).pack(pady=(8, 10))
 
