@@ -53,8 +53,14 @@ OPTIONS = {
 }
 
 setup(
+    # ⚠ 번들·실행파일 이름은 ASCII 로 둡니다("MacFileSurvey").
+    #   실행파일 이름에 공백·한글이 들어가면 codesign 이
+    #   "code object is not signed at all" 로 서명을 실패합니다.
+    #   화면에 보이는 이름은 plist 의 CFBundleDisplayName(한글) 이 담당하고,
+    #   .app 폴더 이름은 build_app.sh 가 서명 뒤 한글로 바꿉니다
+    #   (폴더 이름은 서명에 포함되지 않아 안전).
     app=APP,
-    name="맥 파일 검사",
+    name="MacFileSurvey",
     data_files=DATA_FILES,
     options={"py2app": OPTIONS},
     setup_requires=["py2app"],

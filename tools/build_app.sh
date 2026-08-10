@@ -21,7 +21,12 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$HERE"
 
-APP_NAME="맥 파일 검사"
+# 빌드·서명은 ASCII 이름으로 합니다. 실행파일 이름에 공백·한글이 들어가면
+# codesign 이 깨집니다("code object is not signed at all"). 서명이 끝난 뒤
+# .app 폴더 이름만 한글로 바꿔 Finder 에 한글로 보이게 합니다(폴더 이름은
+# 서명에 포함되지 않아 안전).
+BUILD_NAME="MacFileSurvey"
+DISPLAY_NAME="맥 파일 검사"
 ZIP_NAME="맥파일검사.zip"
 
 echo "── 확인 ────────────────────────────────────────────"
@@ -84,7 +89,7 @@ set +e
 PY2APP_RC=$?
 set -e
 
-APP_PATH="dist/${APP_NAME}.app"
+APP_PATH="dist/${BUILD_NAME}.app"
 [[ -d "$APP_PATH" ]] || {
   echo "✗ .app 을 못 만들었습니다 (py2app 종료코드 $PY2APP_RC)."; exit 1;
 }
@@ -116,16 +121,12 @@ for fw in "$APP_PATH"/Contents/Frameworks/*.framework; do
   sign "$fw" || echo "  (경고: $fw)"
 done
 
-# 3) 메인 실행 파일들
-for m in "$APP_PATH"/Contents/MacOS/*; do
-  [[ -f "$m" ]] && { sign "$m" || echo "  (경고: $m)"; }
-done
-
-# 4) 마지막에 앱 번들 전체 (--deep 없이)
+# 3) 마지막에 앱 번들 전체 (--deep 없이).
+#    번들을 서명하면 메인 실행파일(Contents/MacOS/<이름>)도 함께 서명됩니다.
+#    실행파일 이름이 ASCII(MacFileSurvey)라 여기서 깨지지 않습니다.
 if ! sign "$APP_PATH"; then
   echo "✗ 앱 번들 서명 실패."
-  echo "  Python 3.14 는 아주 최신이라 py2app 궁합 문제일 수 있습니다."
-  echo "  python.org 에서 Python 3.12 를 설치해 다시 시도해 보세요:"
+  echo "  python.org 파이썬으로 다시 시도해 보세요 (예: Python 3.12):"
   echo "    PYTHON=python3.12 bash tools/build_app.sh"
   exit 1
 fi
@@ -133,19 +134,22 @@ codesign --verify --strict "$APP_PATH" \
   && echo "  서명 검증 OK" \
   || echo "  ⚠ 검증 경고 — 실행엔 보통 문제 없습니다."
 
-# 번들 안에서 엔진·사전이 실제로 import 되는지 확인합니다
-# (APP_UI 9항 — 번들에 lang_ko 가 들어갔나 / import lang_ko 가 되나).
-echo "── 번들 자가진단 ───────────────────────────────────"
-BIN="${APP_PATH}/Contents/MacOS/p0_app"
-if [[ -x "$BIN" ]]; then
-  echo "  (엔진 selftest 는 위에서 통과했습니다. 앱은 실행 시 화면에서 다시 확인합니다)"
-fi
+# ── .app 이름을 한글로 되돌리기 ──────────────────────
+# 폴더 이름은 서명에 포함되지 않으므로, 서명 뒤에 바꿔도 안전합니다.
+# Finder 에는 한글로 보이고, 서명은 그대로 유효합니다.
+APP_PATH_FINAL="dist/${DISPLAY_NAME}.app"
+rm -rf "$APP_PATH_FINAL"
+mv "$APP_PATH" "$APP_PATH_FINAL"
+APP_PATH="$APP_PATH_FINAL"
+codesign --verify --strict "$APP_PATH" \
+  && echo "  이름 변경 후 서명 검증 OK ($DISPLAY_NAME.app)" \
+  || echo "  ⚠ 이름 변경 후 검증 경고 — 실행엔 보통 문제 없습니다."
 
 echo "── zip 으로 묶기 ───────────────────────────────────"
 cd dist
 # -y : 심볼릭 링크를 보존합니다 (.app 안의 프레임워크가 링크로 들어 있음)
 rm -f "$ZIP_NAME"
-zip -q -r -y "$ZIP_NAME" "${APP_NAME}.app"
+zip -q -r -y "$ZIP_NAME" "${DISPLAY_NAME}.app"
 cd ..
 
 echo ""
@@ -180,7 +184,7 @@ echo "    (혹시 '손상되었다'고 뜨면 배포_안내.md 의 마지막 항
 #
 # echo "── (P5) DMG 만들기 ─────────────────────────────────"
 # rm -f "dist/${DMG_NAME}"
-# hdiutil create -volname "$APP_NAME" -srcfolder "$APP_PATH" \
+# hdiutil create -volname "$DISPLAY_NAME" -srcfolder "$APP_PATH" \
 #         -ov -format UDZO "dist/${DMG_NAME}"
 #
 # echo "── (P5) 공증 ───────────────────────────────────────"
