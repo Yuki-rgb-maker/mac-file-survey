@@ -31,7 +31,15 @@ OPTIONS = {
     "includes": ["p0_survey", "lang_ko"],
     "packages": ["tkinter"],
     "plist": {
-        "CFBundleName": "맥 파일 검사",
+        # ⚠ CFBundleName 은 ASCII 로 둡니다. py2app 은 이 값으로 .app 폴더와
+        #   'Contents/MacOS/<실행파일>' 이름을 정하는데, 여기에 공백·한글이
+        #   들어가면 codesign 이 그 실행파일을 못 서명합니다
+        #   ("code object is not signed at all"). 화면에 보이는 한글 이름은
+        #   아래 CFBundleDisplayName 이 담당하고, .app 폴더 이름은
+        #   build_app.sh 가 서명을 끝낸 뒤 한글로 바꿉니다(폴더 이름은
+        #   서명에 포함되지 않아 안전).
+        "CFBundleName": "MacFileSurvey",
+        "CFBundleExecutable": "MacFileSurvey",
         "CFBundleDisplayName": "맥 파일 검사",
         "CFBundleIdentifier": "com.macfilesurvey.p0",
         "CFBundleVersion": "0.1.0",
