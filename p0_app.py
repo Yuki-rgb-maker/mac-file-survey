@@ -54,8 +54,11 @@ LINE    = "#D2D2D7"     # 옅은 경계선
 ACCENT  = "#3A3A3C"     # 강조 (거의 무채색)
 OK      = "#1F7A5C"     # 완료 체크
 WARN    = "#8A6D3B"     # 경고 문구 (위험색 아님)
+GHOST   = "#B0B0B6"     # 입력칸 예시문구(placeholder) — 흐린 글씨
 
-WIN_W, WIN_H = 560, 680        # 고정 크기 (설명·권한 안내가 들어가 세로를 늘림)
+JOB_PLACEHOLDER = "예: 그래픽 디자이너 · 영상 편집 · 3D 모델러 (비워도 돼요)"
+
+WIN_W, WIN_H = 560, 720        # 고정 크기 (설명·권한 안내·직업칸이 들어가 세로를 늘림)
 
 FONT     = ("AppleSDGothicNeo", 13)
 FONT_SM  = ("AppleSDGothicNeo", 11)
@@ -79,9 +82,15 @@ STEP_HUMAN = {
     "자동 백업 찾기":       "자동 백업을 찾는 중…",
     "3D 파일 세기":         "3D 파일을 세는 중…",
     "참조·한글·비어도비 세기": "파일 종류를 살펴보는 중…",
+    "확장자 세기":          "파일 종류를 세는 중…",
+    "폴더 모양 (2편 근거)":  "폴더 구성을 살펴보는 중…",
+    "볼륨·링크 확인":        "저장 위치를 확인하는 중…",
+    "이미 만들어 둔 규칙 찾기 (2편)": "이미 정리해 둔 규칙을 찾는 중…",
     ".blend 머리말":        "3D 미리보기를 확인하는 중…",
     "낱말 빈도":            "이름을 살펴보는 중…",
     "폴더 모양":            "폴더 성격을 살펴보는 중…",
+    "링크 뽑기 가능한가 (안전 관문)": "연결된 파일을 확인하는 중…",
+    "Spotlight 메타데이터 (표본)": "파일 정보를 살펴보는 중…",
     "계보 (XMP)":           "파일 안의 작업 이력을 읽는 중…",
     "PSD 헤더":             "포토샵 파일을 살펴보는 중…",
     "AI 생성 흔적":         "AI로 만든 흔적을 찾는 중…",
@@ -123,11 +132,13 @@ def desktop_report_path():
 
 class SurveyWorker(threading.Thread):
 
-    def __init__(self, ui_queue, stop_flag, heavy_gate):
+    def __init__(self, ui_queue, stop_flag, heavy_gate, label="", about=""):
         super().__init__(daemon=True)
         self.q = ui_queue
         self.stop_flag = stop_flag        # threading.Event — 멈추기
         self.heavy_gate = heavy_gate      # HeavyGate — 오래 걸리는 단계 동의
+        self.label = label                # 하시는 일 한 줄 (보고서에 담김)
+        self.about = about
         self.report_path = desktop_report_path()
         # 멈췄을 때도 '여기까지'를 보고서로 남기려면, 중간 상태를 인스턴스에
         # 들고 있어야 합니다. 지역변수로 두면 KeyboardInterrupt 때 사라집니다.
@@ -260,6 +271,16 @@ class SurveyWorker(threading.Thread):
         a["threed"] = log.run("3D 파일 세기", lambda: engine.probe_3d(sv.files))
         a["counts"] = log.run("참조·한글·비어도비 세기",
                               lambda: engine.probe_counts(sv.files))
+        # ── 새 엔진(p0-35)이 더해진 가벼운 검사들 (계보 게이트 앞) ──
+        a["exts"] = log.run("확장자 세기", lambda: engine.probe_extensions(sv.files))
+        a["fshape"] = log.run("폴더 모양 (2편 근거)",
+                              lambda: engine.probe_folder_shape(sv.files, sv.root))
+        a["disk"] = engine.probe_disk_room()
+        a["vols"] = log.run("볼륨·링크 확인",
+                            lambda: engine.probe_volumes_and_links(sv.files, sv.root))
+        a["invsize"] = engine.estimate_inventory_size(sv.files)
+        a["rules"] = log.run("이미 만들어 둔 규칙 찾기 (2편)",
+                             lambda: engine.probe_user_rules(sv.files, sv.root))
         a["blend"] = log.run(".blend 머리말", lambda: engine.probe_blend(sv.files))
         a["vocab"] = log.run("낱말 빈도", lambda: engine.build_token_vocab(sv.files))
         a["profiles"] = log.run("폴더 모양",
@@ -309,6 +330,14 @@ class SurveyWorker(threading.Thread):
                                  note="외부 프로세스")
         finally:
             engine.shutil.rmtree(workdir, ignore_errors=True)
+        self._check_stop()
+
+        # ── 새 엔진(p0-35)이 더한 무거운 검사 (계보 게이트 뒤) ──
+        a["links"] = log.run("링크 뽑기 가능한가 (안전 관문)",
+                             lambda: engine.probe_link_extraction(sv.files))
+        self._check_stop()
+        a["spot"] = log.run("Spotlight 메타데이터 (표본)",
+                            lambda: engine.probe_spotlight_meta(sv.files))
 
         return self._fill_none(a), sv
 
@@ -316,7 +345,7 @@ class SurveyWorker(threading.Thread):
     def _fill_none(a):
         """건너뛴 단계는 None 으로 채웁니다. build_report 가 이를 견딥니다."""
         for k in ("lineage", "family_cmp", "psd", "ai", "thumbs", "phash",
-                  "ownership"):
+                  "ownership", "links", "spot"):
             a.setdefault(k, None)
         return a
 
@@ -388,6 +417,39 @@ class SurveyWorker(threading.Thread):
         a["names"] = engine.name_quality(sv.files)
         a["age"] = engine.age_buckets(sv.files)
         a.setdefault("ownership", None)
+
+        # ── 새 엔진(p0-35) 마무리 계산 (새 main() 과 동일) ──
+        #   전부 build_report 가 .get() 으로 읽어 없어도 안전하지만,
+        #   정상 완료 시 보고서에 나오도록 여기서 채웁니다.
+        try:
+            a["fam_shape"] = engine.probe_family_shape(
+                a.get("families") or [], a.get("lineage"))
+        except Exception:
+            a["fam_shape"] = None
+        try:
+            a["record"] = engine.probe_record_feasibility(
+                a.get("families") or [], a.get("lineage"), a.get("thumbs"))
+        except Exception:
+            a["record"] = None
+        try:
+            a["scan_estimate"] = engine.estimate_product_scan(
+                a.get("steplog"), sv.files)
+        except Exception:
+            a["scan_estimate"] = None
+        # 아주 일찍 멈춰 빠진 가벼운 값은 여기서 한 번 더 채웁니다(값쌉니다).
+        if "disk" not in a:
+            try:
+                a["disk"] = engine.probe_disk_room()
+            except Exception:
+                a["disk"] = None
+        if "invsize" not in a:
+            try:
+                a["invsize"] = engine.estimate_inventory_size(sv.files)
+            except Exception:
+                a["invsize"] = None
+        # 하시는 일(직업 한 줄) — 시작 화면에서 받은 값. 없으면 빈 값.
+        a["label"] = getattr(self, "label", "") or ""
+        a["about"] = getattr(self, "about", "") or ""
 
         if cache:
             cache.save()
@@ -541,12 +603,26 @@ class App(tk.Tk):
                   command=self._open_fda_settings).pack(anchor="w",
                                                         padx=16, pady=(4, 12))
 
+        # 하시는 일 한 줄 (선택) — 여러 대에서 모아 비교할 때 구분에 씁니다.
+        #   빈칸엔 예시문구를 흐린 글씨로 넣어 감을 잡게 합니다(placeholder).
+        tk.Label(root, text="하시는 일 (선택)", font=FONT_SM, bg=BG, fg=SUB,
+                 anchor="w").pack(fill="x", pady=(6, 2))
+        self.job_entry = tk.Entry(root, font=FONT, relief="flat",
+                                  disabledbackground=CARD,
+                                  highlightbackground=LINE, highlightthickness=1,
+                                  highlightcolor=ACCENT)
+        self.job_entry.pack(fill="x", ipady=5)
+        self._job_is_ghost = True
+        self._set_job_ghost()
+        self.job_entry.bind("<FocusIn>", self._job_focus_in)
+        self.job_entry.bind("<FocusOut>", self._job_focus_out)
+
         self.start_btn = tk.Button(root, text="  조사 시작  ", font=FONT_H,
                                    command=self._start, relief="flat",
                                    bg=ACCENT, fg="white",
                                    activebackground=INK, activeforeground="white",
                                    padx=18, pady=8, cursor="pointinghand")
-        self.start_btn.pack(pady=(2, 4))
+        self.start_btn.pack(pady=(10, 4))
 
         # 예상 시간은 버튼 아래 (눌러도 되는지 판단한 뒤 보는 정보)
         self.est_label = tk.Label(
@@ -556,6 +632,29 @@ class App(tk.Tk):
 
         self.selftest_label = tk.Label(root, text="", font=FONT_SM, bg=BG, fg=SUB)
         self.selftest_label.pack(pady=(6, 0))
+
+    # ── 직업 입력칸의 예시문구(placeholder) ────────────────
+    def _set_job_ghost(self):
+        self.job_entry.delete(0, "end")
+        self.job_entry.insert(0, JOB_PLACEHOLDER)
+        self.job_entry.config(fg=GHOST)
+        self._job_is_ghost = True
+
+    def _job_focus_in(self, _event=None):
+        if self._job_is_ghost:
+            self.job_entry.delete(0, "end")
+            self.job_entry.config(fg=INK)
+            self._job_is_ghost = False
+
+    def _job_focus_out(self, _event=None):
+        if not self.job_entry.get().strip():
+            self._set_job_ghost()
+
+    def _read_job(self):
+        """예시문구가 남아 있으면 빈 값으로 봅니다."""
+        if self._job_is_ghost:
+            return ""
+        return self.job_entry.get().strip()
 
     def _run_selftest(self):
         """옛 파일이면 잘못된 결과가 나오므로, 통과해야 시작할 수 있습니다."""
@@ -910,7 +1009,9 @@ class App(tk.Tk):
         #   _make_progress 안에서 시계(_tick_clock)가 도는데, 그 시계는
         #   worker 가 있어야 계속 돕니다. 순서가 바뀌면 시계가 첫 호출에서
         #   바로 멈춰 '0초 경과' 에 붙박입니다(멈춘 것처럼 보임).
-        self.worker = SurveyWorker(self.q, self.stop_flag, self.heavy_gate)
+        job = self._read_job()
+        self.worker = SurveyWorker(self.q, self.stop_flag, self.heavy_gate,
+                                   label=job)
         self._make_progress()
         self.worker.start()
 

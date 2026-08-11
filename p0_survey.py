@@ -32,7 +32,7 @@ import subprocess
 import unicodedata
 from collections import defaultdict, Counter
 
-VERSION = "p0-26"
+VERSION = "p0-35"
 
 # ─────────────────────────────────────────────────────────────
 #  언어 사전
@@ -1770,6 +1770,591 @@ def probe_blend(files, limit=400):
 # 6-g. 항목 7·10·24 — 간단한 세기
 # ─────────────────────────────────────────────────────────────
 
+def probe_extensions(files, top=None):
+    """[페르소나] 확장자별 개수와 용량.
+
+    왜 필요한가:
+      리포트를 여러 대에서 모아 비교할 때, **이 사람이 무슨 작업을 하는지**
+      가장 깨끗하게 알려주는 신호입니다.
+
+        psd 3,400 · ai 1,200 · indd 800   →  그래픽 디자이너
+        blend 200 · fbx 1,500 · stl 300   →  3D
+        prproj 40 · mp4 800 · mov 200     →  영상
+
+      그리고 확장자는 개인정보가 아닙니다. 공유 모드에서도 그대로 냅니다.
+
+    ⚠ 이게 없으면 리포트가 익명이 되어 해석이 안 됩니다.
+      '계보만 찾아낸 파일 288개' 가 나와도 그게 어도비 사용자 건지
+      사진가 건지 모르면 판단할 수 없습니다.
+    """
+    cnt = Counter()
+    size = Counter()
+    for path, sz, mtime, ext, stem in files:
+        key = ext or "(없음)"
+        cnt[key] += 1
+        size[key] += sz
+
+    # 작업 원본만 따로 — 이게 직군을 가장 잘 보여줍니다
+    work = Counter()
+    work_size = Counter()
+    for e, n in cnt.items():
+        if e in SOURCE_EXTS or e in THREED_NATIVE_EXTS or e in THREED_EXCHANGE_EXTS:
+            work[e] = n
+            work_size[e] = size[e]
+
+    # ⚠ 상위 몇 개만 자르면 안 됩니다.
+    #   다양한 도구를 쓰는 사람일수록 **꼬리 쪽에 정보가 있습니다.**
+    #   '.afdesign 12개', '.procreate 40개' 같은 게 그 사람이 어떤 도구를
+    #   쓰는지 알려주는데, 개수가 적어서 잘려 나갑니다.
+    #   확장자는 개인정보가 아니고 한 줄에 셋씩 찍으면 100종이어도 34줄입니다.
+    return {"all": cnt.most_common(), "sizes": size,
+            "work": work.most_common(), "work_sizes": work_size,
+            "total_kinds": len(cnt), "total_files": sum(cnt.values())}
+
+
+def probe_folder_shape(files, root):
+    """[2편] 지금 폴더가 어떻게 생겼는가.
+
+    ⚠ 이게 없으면 2편을 상상으로 만들게 됩니다.
+      "어떻게 정리할지" 를 설계하려면 "지금 어떻게 돼 있는지" 를 알아야 합니다.
+
+    재는 것:
+      · 큰 폴더별 파일 수·용량 (데스크탑·다운로드·문서·사진·영상…)
+      · 폴더 깊이 분포 — 1단계에 몰려 있나, 7단계까지 파고들었나
+      · 폴더당 파일 수 — 5개짜리 폴더가 많나, 2,000개짜리가 있나
+      · 최상위 폴더 개수 — 홈에 폴더가 몇 개나 널려 있나
+    """
+    # ⚠ 예전엔 표준 폴더 8개만 이름을 남기고 나머지를 '그 밖' 으로 뭉갰습니다.
+    #   실측에서 '그 밖 30,491개' 가 나왔습니다 — 절반이 이름 없는 덩어리였죠.
+    #   홈에 직접 만든 작업 폴더가 거기 다 들어간 것입니다.
+    #   목록을 미리 정하지 말고 **실제로 많은 것부터** 보여줘야 합니다.
+    STANDARD = {"Desktop", "Downloads", "Documents", "Pictures", "Movies",
+                "Music", "Public", "Sites"}
+
+    by_top = defaultdict(lambda: [0, 0])       # 이름 -> [개수, 바이트]
+    depth_n = Counter()
+    depth_b = Counter()
+    per_folder = Counter()
+    loose_top = [0, 0]                          # 홈 바로 아래 흩어진 파일
+
+    for path, size, mtime, ext, stem in files:
+        try:
+            rel = os.path.relpath(path, root)
+        except ValueError:
+            continue
+        parts = rel.split(os.sep)
+        d = len(parts) - 1                      # 폴더 깊이
+        depth_n[min(d, 8)] += 1
+        depth_b[min(d, 8)] += size
+        per_folder[os.path.dirname(path)] += 1
+
+        if len(parts) == 1:
+            loose_top[0] += 1
+            loose_top[1] += size
+            key = "(홈 바로 아래)"
+        else:
+            key = parts[0]                      # 실제 이름 그대로
+        by_top[key][0] += 1
+        by_top[key][1] += size
+
+    # 폴더당 파일 수 분포
+    sizes = sorted(per_folder.values())
+    buckets = Counter()
+    for n in sizes:
+        if n == 1:
+            buckets["1개"] += 1
+        elif n <= 5:
+            buckets["2~5개"] += 1
+        elif n <= 20:
+            buckets["6~20개"] += 1
+        elif n <= 100:
+            buckets["21~100개"] += 1
+        elif n <= 500:
+            buckets["101~500개"] += 1
+        else:
+            buckets["500개 초과"] += 1
+
+    # 최상위 폴더 개수 (홈 바로 아래)
+    top_folders = set()
+    for path, *_ in files:
+        try:
+            rel = os.path.relpath(path, root)
+        except ValueError:
+            continue
+        parts = rel.split(os.sep)
+        if len(parts) > 1:
+            top_folders.add(parts[0])
+
+    return {
+        "by_top": dict(by_top), "standard": STANDARD,
+        "depth_n": depth_n, "depth_b": depth_b,
+        "folder_buckets": buckets,
+        "folders": len(per_folder),
+        "top_folders": len(top_folders),
+        "loose_top": loose_top,
+        "median_per_folder": (sizes[len(sizes) // 2] if sizes else 0),
+        "max_per_folder": (sizes[-1] if sizes else 0),
+    }
+
+
+def probe_family_shape(name_fams, lineage):
+    """[3편] 버전 가족이 어떻게 생겼는가 — 화면 설계의 근거.
+
+    ⚠ '가족 763개' 만으로는 화면을 못 그립니다.
+
+        2개짜리가 90%   →  좌우 비교 화면
+        20개짜리가 흔함  →  시간축 + 스크롤
+
+      완전히 다른 화면입니다.
+
+    그리고 '가족이 폴더를 넘나드는가' 도 봅니다.
+      지금 이름 기반 묶기는 **같은 폴더 안에서만** 합니다.
+      계보는 폴더를 넘어 묶이므로, 그 차이가 크면
+      제품에서는 폴더를 넘는 묶기가 필요하다는 뜻입니다.
+    """
+    def dist(sizes):
+        b = Counter()
+        for n in sizes:
+            if n == 2:
+                b["2개"] += 1
+            elif n <= 4:
+                b["3~4개"] += 1
+            elif n <= 9:
+                b["5~9개"] += 1
+            elif n <= 20:
+                b["10~20개"] += 1
+            else:
+                b["20개 초과"] += 1
+        return b
+
+    name_sizes = [len(v) for _, v in name_fams]
+    out = {"name_dist": dist(name_sizes),
+           "name_max": max(name_sizes) if name_sizes else 0,
+           "name_median": (sorted(name_sizes)[len(name_sizes) // 2]
+                           if name_sizes else 0)}
+
+    if lineage:
+        fams = lineage.get("lineage_families") or {}
+        lin_sizes = [len(v) for v in fams.values()]
+        out["lin_dist"] = dist(lin_sizes)
+        out["lin_max"] = max(lin_sizes) if lin_sizes else 0
+
+        # 계보 가족이 여러 폴더에 걸쳐 있는가
+        cross = 0
+        for members in fams.values():
+            dirs = {os.path.dirname(m[0]) for m in members}
+            if len(dirs) > 1:
+                cross += 1
+        out["cross_folder"] = cross
+        out["lin_total"] = len(fams)
+    return out
+
+
+def probe_spotlight_meta(files, limit=300):
+    """[2편] Spotlight 가 들고 있는 것 중 우리가 아직 안 쓰는 것.
+
+    ⚠ METADATA.md 에 "1급 증거" 라고 적어 놓고 실제로는 안 읽고 있었습니다.
+
+      kMDItemWhereFroms      어디서 받았는지 URL
+                             → 다운로드 폴더 분류의 결정적 증거
+      kMDItemLastUsedDate    마지막으로 **연** 날
+                             → 지금은 '수정 시각' 만 봅니다. 5년 전에 만들었어도
+                               지난달에 열었으면 살아 있는 파일인데 구분 못 합니다
+
+    mdls 로 표본만 봅니다 (파일당 한 번씩 부르면 느립니다).
+    """
+    if platform.system() != "Darwin":
+        return None
+
+    targets = [f for f in files if f[1] > 100 * 1024]
+    if not targets:
+        return None
+    step = max(1, len(targets) // limit)
+    picked = [targets[i] for i in range(0, len(targets), step)][:limit]
+
+    # ⚠ 셸을 거치지 않고 인자를 직접 넘깁니다.
+    #   예전엔 f'mdls ... "{path}"' 로 셸 명령을 만들었는데,
+    #   파일 이름에 " 나 $ 나 ` 가 있으면 명령이 깨집니다.
+    #   실측에서 WhereFroms 가 0개로 나왔던 원인 중 하나입니다.
+    paths = [p for p, *_ in picked]
+    out = ""
+    CHUNK = 40
+    for i in range(0, len(paths), CHUNK):
+        try:
+            r = subprocess.run(
+                ["mdls", "-name", "kMDItemWhereFroms",
+                 "-name", "kMDItemLastUsedDate",
+                 "-name", "kMDItemUseCount",
+                 "-name", "kMDItemContentCreationDate"] + paths[i:i + CHUNK],
+                capture_output=True, text=True, timeout=60)
+            out += r.stdout + "\n"
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+
+    # ⚠ mdls 출력 형식을 좁게 가정하면 안 됩니다.
+    #   값이 있을 때:  kMDItemWhereFroms = (\n    "https://…"\n)
+    #   값이 없을 때:  kMDItemWhereFroms = (null)
+    #   한 줄로 나올 때도 있습니다. 그래서 '(null) 이 아닌 것' 으로 셉니다.
+    def count_present(key):
+        n = 0
+        for m in re.finditer(rf"{key}\s*=\s*(.*)", out):
+            val = m.group(1).strip()
+            if val and val != "(null)" and not val.startswith("(null"):
+                n += 1
+        return n
+
+    has_from = count_present("kMDItemWhereFroms")
+    has_used = count_present("kMDItemLastUsedDate")
+    has_count = count_present("kMDItemUseCount")
+
+    # 출처 도메인 (개인정보 아님 — 어디서 받는지가 분류의 단서)
+    domains = Counter()
+    for m in re.finditer(r'"?(https?://([^/"\s]+))', out):
+        domains[m.group(2)[:40]] += 1
+
+    return {"checked": len(picked),
+            "with_wherefrom": has_from,
+            "with_lastused": has_used,
+            "with_usecount": has_count,
+            "raw_sample": out[:400],       # 0 으로 나올 때 원인을 보려고
+            "domains": domains}
+
+
+def estimate_product_scan(steplog, files):
+    """[제품] 이 맥에서 제품 첫 스캔이 몇 분짜리인가.
+
+    P0 는 표본만 봅니다. 제품은 전 파일을 봐야 합니다.
+    표본에 걸린 시간을 전체로 환산해 **첫 스캔 예상 시간**을 냅니다.
+
+    이 숫자가 2편·3편 첫 스캔 화면의 설계 근거입니다.
+    ("약 N분 걸립니다" 를 정직하게 말하려면 N 을 알아야 합니다)
+    """
+    per_step = {name: (sec, n) for name, sec, n, _ in steplog.steps
+                if isinstance(n, int) and n > 0}
+
+    # 제품에서 전 파일에 적용해야 하는 단계들
+    img_like = sum(1 for f in files if f[3] in RASTER_EXTS)
+    work_like = sum(1 for f in files if f[3] in XMP_PROBE_EXTS)
+
+    rows = []
+    if "계보 (XMP)" in per_step:
+        sec, n = per_step["계보 (XMP)"]
+        rows.append(("파일 안 작업 이력 읽기", sec / n * work_like, work_like))
+    if "겉모습 지문 (sips)" in per_step:
+        sec, n = per_step["겉모습 지문 (sips)"]
+        rows.append(("겉모습 지문", sec / n * img_like, img_like))
+    for name in ("썸네일 (qlmanage)",):
+        for nm, sec, n, _ in steplog.steps:
+            if nm == name and sec > 0:
+                # 썸네일은 개수가 안 잡혀서 표본 수로 환산
+                rows.append(("미리보기 확인", sec / 140 * img_like, img_like))
+                break
+
+    total = sum(r[1] for r in rows)
+    return {"rows": rows, "total_sec": total,
+            "images": img_like, "work_files": work_like}
+
+
+def probe_disk_room():
+    """[3편] 되돌리기 보관함에 쓸 공간이 있는가.
+
+    3편은 지운 것을 30일 보관합니다. 공간이 없으면 그 약속을 못 지킵니다.
+    """
+    try:
+        st = os.statvfs(os.path.expanduser("~"))
+        free = st.f_bavail * st.f_frsize
+        total = st.f_blocks * st.f_frsize
+        return {"free": free, "total": total,
+                "used_pct": (1 - free / total) * 100 if total else 0}
+    except (OSError, AttributeError):
+        return None
+
+
+def probe_link_extraction(files, limit=200):
+    """[2·3편 안전] 파일 안에서 링크 경로를 실제로 꺼낼 수 있는가.
+
+    ⚠ 판정에 "참조 그래프를 먼저 만들어야 합니다" 라고 써 놓고,
+      정작 **만들 수 있는지** 를 안 쟀습니다. 확장자만 세고 있었습니다.
+
+      이게 안 되면 안전 관문이 통째로 성립하지 않습니다.
+      옮기면 깨지는 파일을 못 막으니까요.
+
+    방법:
+      PSD·INDD·AI 는 링크한 파일의 경로를 파일 안에 문자열로 남깁니다.
+      (PSD 는 Linked Layers, INDD 는 Links 패널의 경로)
+      정확한 파싱 대신 **경로처럼 생긴 문자열이 있는지** 를 봅니다.
+      P0 의 목적은 '가능한가' 이지 '정확히 뽑기' 가 아닙니다.
+    """
+    # '무언가/무언가.확장자' 모양. 링크 대상이 될 만한 확장자만.
+    LINK_RE = re.compile(
+        rb"[/\\][\x20-\x7e\xc0-\xff]{2,90}\.(?:jpg|jpeg|png|tif|tiff|psd|psb"
+        rb"|ai|eps|pdf|svg|indd|mov|mp4|wav|aif|exr|dng|raw)",
+        re.IGNORECASE)
+
+    targets = [f for f in files if f[3] in REFERENCE_HOLDER_EXTS]
+    targets.sort(key=lambda f: -f[1])
+    targets = targets[:limit]
+
+    checked = with_links = 0
+    total_links = 0
+    by_ext = defaultdict(lambda: [0, 0])     # 확장자 -> [검사, 링크 발견]
+    for path, size, mtime, ext, stem in targets:
+        checked += 1
+        by_ext[ext][0] += 1
+        found = set()
+        try:
+            with open(path, "rb") as f:
+                blob = f.read(2 << 20)
+                if size > 3 << 20:
+                    f.seek(max(0, size - (1 << 20)))
+                    blob += f.read(1 << 20)
+            for m in LINK_RE.finditer(blob):
+                found.add(m.group(0))
+        except OSError:
+            continue
+        if found:
+            with_links += 1
+            by_ext[ext][1] += 1
+            total_links += len(found)
+
+    return {"checked": checked, "with_links": with_links,
+            "avg_links": total_links / max(with_links, 1),
+            "by_ext": dict(by_ext)}
+
+
+def probe_record_feasibility(name_fams, lineage, thumbs):
+    """[3편 핵심] '기록으로 남기기' 를 만들 수 있는가.
+
+    3편의 핵심 발명은 **파일은 지우되 썸네일 요약을 남기는 것** 입니다.
+    그러려면 가족에 속한 파일에서 썸네일이 나와야 합니다.
+
+    ⚠ 전체 썸네일 성공률(85%)로는 판단할 수 없습니다.
+      가족 파일이 .mov·.indd 위주면 기록을 못 만듭니다.
+      **가족에 속한 파일만** 따로 봐야 합니다.
+    """
+    fam_exts = Counter()
+    fam_files = 0
+    for _, members in name_fams:
+        for m in members:
+            e = os.path.splitext(m[0])[1].lower()
+            fam_exts[e] += 1
+            fam_files += 1
+    if lineage:
+        for members in (lineage.get("lineage_families") or {}).values():
+            for m in members:
+                e = os.path.splitext(m[0])[1].lower()
+                fam_exts[e] += 1
+                fam_files += 1
+
+    # 썸네일이 나오는 것으로 확인된 확장자
+    ok_exts = {e for e, (o, t) in (thumbs or {}).items() if t and o / t >= 0.7}
+    bad_exts = {e for e, (o, t) in (thumbs or {}).items() if t and o / t < 0.3}
+
+    covered = sum(n for e, n in fam_exts.items() if e in ok_exts)
+    failed = sum(n for e, n in fam_exts.items() if e in bad_exts)
+    unknown = fam_files - covered - failed
+
+    return {"fam_files": fam_files,
+            "covered": covered, "failed": failed, "unknown": unknown,
+            "top_exts": fam_exts.most_common(10),
+            "bad_in_fams": [(e, n) for e, n in fam_exts.most_common()
+                            if e in bad_exts][:6]}
+
+
+def probe_volumes_and_links(files, root):
+    """[2·3편] 볼륨과 링크 상황.
+
+    왜 필요한가:
+      · 외장 드라이브에 파일이 있으면 **볼륨을 넘는 이동** 이 됩니다.
+        같은 볼륨 안 이동은 이름만 바꾸는 것이라 즉시 끝나지만,
+        볼륨을 넘으면 복사 후 삭제라 느리고 중간에 실패할 수 있습니다.
+      · 하드링크가 있으면 하나를 지워도 다른 게 남습니다.
+        용량 계산이 틀어지고, "지웠는데 공간이 안 늘었다" 가 됩니다.
+      · 심볼릭 링크는 지금 건너뛰는데 **몇 개인지도 모릅니다.**
+    """
+    devs = Counter()
+    hardlinked = 0
+    hardlink_bytes = 0
+    for path, size, mtime, ext, stem in files:
+        try:
+            st = os.stat(path, follow_symlinks=False)
+        except OSError:
+            continue
+        devs[st.st_dev] += 1
+        if getattr(st, "st_nlink", 1) > 1:
+            hardlinked += 1
+            hardlink_bytes += size
+
+    try:
+        root_dev = os.stat(root).st_dev
+    except OSError:
+        root_dev = None
+
+    other = sum(n for d, n in devs.items() if d != root_dev)
+    return {"volumes": len(devs), "on_other_volume": other,
+            "hardlinked": hardlinked, "hardlink_bytes": hardlink_bytes}
+
+
+def estimate_inventory_size(files):
+    """[P1] 인벤토리 DB 가 얼마나 커질까.
+
+    제품은 파일마다 계보·지문·색공간 등을 저장해 둡니다.
+    그게 몇 MB 인지 알아야 저장 방식(JSON vs SQLite)을 정할 수 있습니다.
+    """
+    # 파일당 대략: 경로 120B + 계보 200B + 지문 20B + 기타 60B
+    per_file = 400
+    total = len(files) * per_file
+    work = sum(1 for f in files if f[3] in XMP_PROBE_EXTS)
+    return {"files": len(files), "est_bytes": total,
+            "work_files": work}
+
+
+def probe_user_rules(files, root, min_files=3):
+    """[2편] 사용자가 이미 만들어 둔 정리 규칙을 찾습니다.
+
+    ⚠ 지금까지 '엉망인 것' 만 재고 '잘 되어 있는 것' 은 안 봤습니다.
+
+      기획서의 문장을 다시 보면 —
+        "나름대로 정리해보려다가 중도에 포기한 상태"
+      **'나름대로 정리해봤다' 가 앞에 있습니다.** 그 부분을 찾아야 합니다.
+
+    왜 중요한가:
+      · 잘 정리된 폴더를 2편이 헤집으면 그 순간 신뢰를 잃습니다
+      · 사용자의 규칙을 배우면 **그게 정리 기준이 됩니다**
+
+        ❌  우리가 만든 폴더 구조를 제안
+        ✅  "2021년엔 이렇게 정리하셨네요. 그 방식으로 맞춰드릴까요?"
+
+      'AI 가 폴더 이름을 짓지 말고 사용자가 짓게 한다' 는 원칙과 같습니다.
+      이미 지어 둔 게 있으면 그걸 쓰면 됩니다.
+
+    재는 것:
+      ① 반복되는 하위 폴더 이름 — 이 사람의 작업 단계
+      ② 폴더 이름 규칙 — 날짜형 / 순번형 / 이름형
+      ③ 규칙이 지켜지는 정도 — 잘 된 폴더 vs 안 된 폴더
+      ④ 시기별 규칙 변화 — 언제부터 무너졌나
+      ⑤ 가장 잘 정리된 폴더 — 2편이 본보기로 삼을 곳
+    """
+    # ── 폴더 이름의 규칙 판별 ────────────────────────────
+    DATE_FOLDER = re.compile(
+        r"^(\d{4}[-_.]?\d{2}([-_.]?\d{2})?|\d{6}|\d{8}|"
+        r"\d{4}년?|\d{2}[-_.]\d{2})")
+    NUM_FOLDER = re.compile(r"^\d{1,3}[._\-\s)]")      # 01_ 02. 3)
+    def folder_rule(name):
+        if DATE_FOLDER.match(name):
+            return "날짜형"
+        if NUM_FOLDER.match(name):
+            return "순번형"
+        return "이름형"
+
+    # ── 폴더 목록 모으기 ─────────────────────────────────
+    dir_files = defaultdict(list)
+    for path, size, mtime, ext, stem in files:
+        dir_files[os.path.dirname(path)].append((stem, ext, mtime, size))
+
+    # ── ① 반복되는 하위 폴더 이름 ────────────────────────
+    #    브랜딩_한빛/원본  포스터_전시/원본  →  '원본' 이 반복
+    #    여러 부모 아래에서 같은 이름이 반복되면 그건 '작업 단계' 입니다.
+    child_parents = defaultdict(set)
+    for d in dir_files:
+        base = os.path.basename(d)
+        parent = os.path.dirname(d)
+        if base and parent:
+            child_parents[base].add(parent)
+    repeated = [(name, len(ps)) for name, ps in child_parents.items()
+                if len(ps) >= 3 and len(name) <= 16]
+    repeated.sort(key=lambda x: -x[1])
+
+    # ── ② 폴더 이름 규칙 분포 ────────────────────────────
+    #    ⚠ 파일이 든 폴더만 보면 상위 폴더 이름을 놓칩니다.
+    #      '2021-03_브랜딩한빛/원본/…' 에서 파일은 '원본' 안에 있지만
+    #      규칙이 담긴 이름은 '2021-03_브랜딩한빛' 쪽입니다.
+    #      그래서 **경로에 나오는 모든 폴더 이름**을 봅니다.
+    rule_count = Counter()
+    rule_by_year = defaultdict(Counter)
+    seen_dirs = set()
+    for d, items in dir_files.items():
+        if len(items) < min_files:
+            continue
+        times = sorted(t for _, _, t, _ in items)
+        yr = time.localtime(times[len(times) // 2]).tm_year
+
+        try:
+            rel = os.path.relpath(d, root)
+        except ValueError:
+            continue
+        for part in rel.split(os.sep):
+            if not part or part == ".":
+                continue
+            key = (d, part)
+            if key in seen_dirs:
+                continue
+            seen_dirs.add(key)
+            r = folder_rule(LANG.normalize_text(part))
+            rule_count[r] += 1
+            rule_by_year[yr][r] += 1
+
+    # ── ③ 폴더별 '정돈 점수' ─────────────────────────────
+    #    이름이 고르고 · 확장자가 정리돼 있고 · 시기가 모여 있으면 정돈된 것
+    scored = []
+    for d, items in dir_files.items():
+        if len(items) < 5:
+            continue
+        stems = [s for s, _, _, _ in items]
+        lens = [len(s) for s in stems]
+        mean_len = sum(lens) / len(lens)
+        var = sum(abs(x - mean_len) for x in lens) / len(lens)
+
+        # 이름 앞부분이 공통인가 (프로젝트_요소_v1 같은 규칙)
+        prefixes = Counter()
+        for s in stems:
+            toks = tokenize_stem(s)
+            if toks:
+                prefixes[toks[0].lower()] += 1
+        top_prefix = prefixes.most_common(1)[0][1] / len(stems) if prefixes else 0
+
+        # 버전 표시를 붙였는가
+        versioned = sum(1 for s in stems
+                        if normalize_stem(s) != s.strip().lower()) / len(stems)
+
+        # 기계 이름이 아닌가 (IMG_4821 뿐이면 정리한 게 아님)
+        machine = sum(1 for s in stems
+                      if _MACHINE_RE.match(s.strip())) / len(stems)
+
+        # ⚠ 처음엔 '무제 폴더' 안의 IMG_4801~4808 도 100점이 나왔습니다.
+        #   이름 길이가 고르고 앞부분('img')이 공통이라서요.
+        #   **기계가 붙인 이름은 정리한 게 아닙니다.** 곱셈으로 눌러야 합니다.
+        #   폴더 이름도 함께 봅니다 ('무제 폴더' 는 규칙이 아닙니다).
+        base = LANG.normalize_text(os.path.basename(d))
+        bad_folder = bool(re.match(
+            r"^(무제|새 ?폴더|제목\s*없음|untitled|new folder|폴더)", base, re.I))
+
+        raw = (
+            (1 if var < 4 else 0) * 0.3 +          # 이름 길이가 고름
+            top_prefix * 0.3 +                      # 앞부분이 공통
+            versioned * 0.4                         # 버전 표시를 붙임
+        )
+        # 기계 이름 비율만큼 깎습니다 (전부 기계 이름이면 0점)
+        score = raw * (1 - machine)
+        if bad_folder:
+            score *= 0.3
+        scored.append((d, score, len(items), top_prefix, machine))
+
+    scored.sort(key=lambda x: -x[1])
+    tidy = [s for s in scored if s[1] >= 0.6]
+    messy = [s for s in scored if s[1] < 0.3]
+
+    return {
+        "repeated_children": repeated[:10],
+        "rule_count": rule_count,
+        "rule_by_year": {y: dict(c) for y, c in sorted(rule_by_year.items())},
+        "folders_scored": len(scored),
+        "tidy": len(tidy), "messy": len(messy),
+        "best": scored[:5],
+        "worst": scored[-5:] if len(scored) > 5 else [],
+    }
+
+
 def probe_counts(files):
     """[항목 7·10·24] 참조 보유 파일 · 한글 이름 비율 · 비어도비 원본 비율."""
     ref = 0
@@ -2605,11 +3190,15 @@ def probe_dup_locations(dups, root):
 # 7. 환경
 # ─────────────────────────────────────────────────────────────
 
-def sh(cmd):
-    """셸 명령을 돌려 표준출력만 돌려줍니다. 실패하면 빈 문자열."""
+def sh(cmd, timeout=15):
+    """셸 명령을 돌려 표준출력만 돌려줍니다. 실패하면 빈 문자열.
+
+    timeout 은 부르는 쪽에서 정할 수 있습니다.
+    mdls 로 파일 50개를 한 번에 물으면 15초로는 모자랍니다.
+    """
     try:
         return subprocess.run(cmd, shell=True, capture_output=True,
-                              text=True, timeout=15).stdout.strip()
+                              text=True, timeout=timeout).stdout.strip()
     except Exception:
         return ""
 
@@ -2644,6 +3233,21 @@ def environment():
 # 8. 보고서
 # ─────────────────────────────────────────────────────────────
 
+def _wrap(text, width=60):
+    """긴 문장을 보고서 폭에 맞게 자릅니다. 한글은 두 칸으로 셉니다."""
+    out, line, w = [], "", 0
+    for ch in text.replace("\n", " "):
+        cw = 2 if ord(ch) > 0x1100 else 1
+        if w + cw > width:
+            out.append(line)
+            line, w = "", 0
+        line += ch
+        w += cw
+    if line:
+        out.append(line)
+    return out or [""]
+
+
 def gb(n):
     """바이트를 GB 문자열로."""
     return f"{n / 2**30:,.2f} GB"
@@ -2668,6 +3272,9 @@ def build_report(env, sv, analysis, elapsed, share=False):
     A(f"  대상: {'(가려짐)' if share else sv.root}")
     if share:
         A("  공유용 — 파일 이름·경로가 나오는 절은 담지 않았습니다.")
+    label = analysis.get("label")
+    if label:
+        A(f"  하시는 일: {label}")
     A(f"  소요: {elapsed:.1f}초" + ("   ※ 파일 수 상한에 걸려 일부만 봤습니다" if sv.hit_limit else ""))
     A("=" * 68)
 
@@ -2722,6 +3329,106 @@ def build_report(env, sv, analysis, elapsed, share=False):
     tot = sum(nq.values()) or 1
     for k, v in nq.most_common():
         A(row(f"  이름: {k}", f"{v:>8,} 개 ({v/tot*100:4.1f}%)"))
+
+    fs = analysis.get("fshape")
+    if fs:
+        A("")
+        A("  지금 폴더가 어떻게 생겼나 (2편이 다시 짤 대상):")
+        A(row("    폴더 수", f"{fs['folders']:,} 곳 "
+                             f"(홈 바로 아래 {fs['top_folders']} 곳)"))
+        A(row("    폴더당 파일 수",
+              f"중앙값 {fs['median_per_folder']}개 · "
+              f"가장 많은 곳 {fs['max_per_folder']:,}개"))
+        A("")
+        A("    홈 바로 아래 폴더별 (용량 순):")
+        std = fs.get("standard") or set()
+        rows_shown = 0
+        for name, (n, b) in sorted(fs["by_top"].items(),
+                                   key=lambda kv: -kv[1][1]):
+            if rows_shown >= 15:
+                break
+            rows_shown += 1
+            # 표준 폴더인지 · 직접 만든 폴더인지 구분해서 보여 줍니다
+            mark = "  " if name in std or name == "(홈 바로 아래)" else "★ "
+            label = name if not share else (
+                name if name in std or name == "(홈 바로 아래)"
+                else f"(직접 만든 폴더 {rows_shown})")
+            A(row(f"      {mark}{label[:24]}", f"{n:>7,} 개 · {gb(b)}"))
+        if len(fs["by_top"]) > rows_shown:
+            A(f"      … 그 밖 {len(fs['by_top']) - rows_shown}곳")
+        A("      (★ = 직접 만드신 폴더. 표준 폴더 밖입니다)")
+        A("")
+        A("    폴더 깊이:")
+        for d in sorted(fs["depth_n"]):
+            label = f"{d}단계" + ("+" if d >= 8 else "")
+            bar = "█" * int(fs["depth_n"][d] / max(sum(fs["depth_n"].values()), 1) * 30)
+            A(f"      {label:<6} {fs['depth_n'][d]:>7,}개  {bar}")
+        A("")
+        A("    폴더당 파일 수 분포:")
+        for k in ("1개", "2~5개", "6~20개", "21~100개", "101~500개", "500개 초과"):
+            if fs["folder_buckets"].get(k):
+                A(row(f"      {k}", f"{fs['folder_buckets'][k]:>6,} 곳"))
+
+    ru = analysis.get("rules")
+    if ru and ru.get("folders_scored"):
+        A("")
+        A("  이미 만들어 두신 규칙 (2편이 배울 것):")
+        A("    잘 정리된 폴더를 헤집으면 신뢰를 잃습니다.")
+        A("    오히려 그 방식을 배워서 나머지에 맞춰야 합니다.")
+        A("")
+        A(row("    정돈된 폴더", f"{ru['tidy']:,} 곳 / {ru['folders_scored']:,} 곳"))
+        A(row("    규칙이 없는 폴더", f"{ru['messy']:,} 곳"))
+
+        if ru["repeated_children"]:
+            A("")
+            A("    여러 곳에서 반복되는 하위 폴더 이름")
+            A("    (= 이 사람이 만든 작업 단계):")
+            # 반복되는 폴더 이름은 '작업 단계' 라 개인정보가 아닙니다.
+            #   (원본 · 작업 · 납품 · 시안 …)
+            #   가려 버리면 '(2글자)' 만 남아 쓸모가 없어집니다.
+            #   다만 사람 이름·클라이언트명이 반복될 수도 있으니
+            #   공유 모드에서는 '여러 곳에서 반복되는 것' 만 냅니다.
+            #   (한 사람 이름이 3곳 넘게 반복되는 일은 드뭅니다)
+            for name, n in ru["repeated_children"][:8]:
+                A(row(f"      {name[:16]}", f"{n} 곳에서 반복"))
+
+        if ru["rule_count"]:
+            A("")
+            A("    폴더 이름 규칙:")
+            tot = sum(ru["rule_count"].values())
+            for r in ("날짜형", "순번형", "이름형"):
+                n = ru["rule_count"].get(r, 0)
+                if n:
+                    A(row(f"      {r}", f"{n:,} 곳 ({n/tot*100:.0f}%)"))
+
+        by_year = ru.get("rule_by_year") or {}
+        if len(by_year) >= 3:
+            A("")
+            A("    시기별로 규칙이 어떻게 변했나")
+            A("    (기획서의 '정리하려다 중도에 포기' 를 여기서 봅니다):")
+            for y in sorted(by_year)[-8:]:
+                c = by_year[y]
+                t = sum(c.values()) or 1
+                dated = c.get("날짜형", 0) + c.get("순번형", 0)
+                bar = "█" * int(dated / t * 20)
+                A(f"      {y}년  규칙적 {dated/t*100:3.0f}%  {bar:<20}"
+                  f"  ({t}곳)")
+
+        if ru["best"] and not share:
+            A("")
+            A("    가장 잘 정리된 폴더 (2편이 본보기로 삼을 곳):")
+            for d, sc, n, pfx, mach in ru["best"]:
+                try:
+                    rel = os.path.relpath(d, sv.root)[:44]
+                except ValueError:
+                    rel = d[:44]
+                A(f"      {sc*100:3.0f}점  {n:>4}개  {rel}")
+        elif ru["best"]:
+            A("")
+            A("    가장 잘 정리된 폴더 점수:")
+            for d, sc, n, pfx, mach in ru["best"]:
+                A(f"      {sc*100:3.0f}점  파일 {n:>4}개  "
+                  f"(이름 앞부분 공통 {pfx*100:.0f}%)")
 
     # ── 3편 신호
     A("")
@@ -2914,6 +3621,48 @@ def build_report(env, sv, analysis, elapsed, share=False):
               f"{ct['nonadobe']:,} 개 · {gb(ct['nonadobe_bytes'])}"))
 
     # ── 항목 32: 튀는 폴더 (특수상황 감지)
+    ex_ = analysis.get("exts")
+    if ex_:
+        A("")
+        A("── 어떤 파일을 다루시나 ─────────────────────────────")
+        A("  여러 대에서 모아 비교할 때 직군이 가장 잘 드러나는 신호입니다.")
+        A("  (확장자는 개인정보가 아니라 공유 모드에서도 그대로 냅니다)")
+        A("")
+        A(f"  작업 원본 {len(ex_['work'])}종 — 전부:")
+        if ex_["work"]:
+            for e, n in ex_["work"]:
+                A(row(f"    {e}", f"{n:>7,} 개 · {gb(ex_['work_sizes'][e])}"))
+        else:
+            A("    (작업 원본으로 분류되는 파일이 없습니다)")
+        A("")
+        A(f"  전체 확장자 {ex_['total_kinds']:,}종 "
+          f"({ex_['total_files']:,}개) — 3개 이상인 것 전부:")
+        line = []
+        shown = 0
+        for e, n in ex_["all"]:
+            if n < 3:
+                continue
+            shown += 1
+            line.append(f"{(e or '(없음)')} {n:,}")
+            if len(line) == 3:
+                A("      " + "   ".join(f"{x:<22}" for x in line))
+                line = []
+        if line:
+            A("      " + "   ".join(f"{x:<22}" for x in line))
+        rare = ex_["total_kinds"] - shown
+        if rare > 0:
+            A(f"      (2개 이하인 확장자 {rare}종은 생략)")
+
+    about = analysis.get("about")
+    if about:
+        A("")
+        A("── 본인이 말씀하신 것 ───────────────────────────────")
+        A("  통계로 추론한 것과 대조하는 데 씁니다.")
+        A("  (우리 추론이 맞았는지 확인하는 정답지입니다)")
+        A("")
+        for line in _wrap(about, 60):
+            A(f"    {line}")
+
     un = analysis.get("unusual")
     pf = analysis.get("profiles") or []
     if pf:
@@ -3030,6 +3779,25 @@ def build_report(env, sv, analysis, elapsed, share=False):
     if ex:
         A("")
         A("  실제로 만들어진 조언 (3편의 핵심 기능):")
+        # 공유 모드에서도 **개수와 근거 종류는** 냅니다.
+        #   파일 이름만 빼면 됩니다. 개수가 안 보이면 이 기능이
+        #   성립하는지 판단할 수 없습니다.
+        kinds = Counter()
+        decided = 0
+        for _, msg, keep in ex:
+            if keep:
+                decided += 1
+            for key, label in (("프로그램이 다릅니다", "만든 프로그램이 다름"),
+                               ("많이 저장", "저장 횟수 차이"),
+                               ("인쇄용", "색공간 전환"),
+                               ("큽니다", "크기 차이")):
+                if key in msg:
+                    kinds[label] += 1
+        A(row("    조언이 만들어진 묶음", f"{len(ex):,} 개"))
+        A(row("    어느 쪽을 남길지까지 판단",
+              f"{decided:,} 개 ({decided/max(len(ex),1)*100:.0f}%)"))
+        for label, n in kinds.most_common():
+            A(row(f"      근거: {label}", f"{n:,} 개"))
         for stem, msg, keep in (ex[:6] if not share else []):
             A(f"    · {stem[:40]}")
             A(f"        {msg[:100]}")
@@ -3051,6 +3819,137 @@ def build_report(env, sv, analysis, elapsed, share=False):
         A("    많이 나온 폴더:")
         for d, n in (dl["dirs"].most_common(4) if not share else []):
             A(f"      {n:>4}개  {d}")
+
+    fsh = analysis.get("fam_shape")
+    if fsh:
+        A("")
+        A("── 버전 가족이 어떻게 생겼나 (3편 화면 설계) ────────")
+        A("  2개짜리가 대부분이면 좌우 비교 화면,")
+        A("  10개 넘는 게 흔하면 시간축 + 스크롤이 필요합니다.")
+        A("")
+        A("  이름으로 묶은 가족:")
+        for k in ("2개", "3~4개", "5~9개", "10~20개", "20개 초과"):
+            if fsh["name_dist"].get(k):
+                A(row(f"    {k}", f"{fsh['name_dist'][k]:>5,} 묶음"))
+        A(row("    가장 큰 가족", f"{fsh['name_max']:,} 개"))
+        if "lin_dist" in fsh:
+            A("")
+            A("  계보로 묶은 가족:")
+            for k in ("2개", "3~4개", "5~9개", "10~20개", "20개 초과"):
+                if fsh["lin_dist"].get(k):
+                    A(row(f"    {k}", f"{fsh['lin_dist'][k]:>5,} 묶음"))
+            A(row("    ★ 여러 폴더에 걸친 가족",
+                  f"{fsh.get('cross_folder', 0):,} / "
+                  f"{fsh.get('lin_total', 0):,} 묶음"))
+            A("      (많으면 제품에서는 폴더를 넘어 묶어야 합니다.")
+            A("       지금 이름 기반은 같은 폴더 안에서만 묶습니다)")
+
+    lk = analysis.get("links")
+    if lk and lk.get("checked"):
+        A("")
+        A("── 옮기면 깨지는 것을 찾을 수 있나 (안전 관문) ──────")
+        A("  파일 안에 링크한 파일의 경로가 남아 있는지 봅니다.")
+        A("  이게 안 되면 옮기다 프로젝트를 깨뜨립니다.")
+        c = lk["checked"]
+        A(row("  검사한 파일", f"{c:,} 개"))
+        A(row("  ★ 링크 경로를 꺼낼 수 있음",
+              f"{lk['with_links']:,} 개 ({lk['with_links']/max(c,1)*100:.0f}%)"))
+        A(row("    파일당 평균 링크 수", f"{lk['avg_links']:.1f} 개"))
+        if lk["by_ext"]:
+            A("    확장자별:")
+            for e, (t, w) in sorted(lk["by_ext"].items(),
+                                    key=lambda kv: -kv[1][0])[:8]:
+                mark = "●" if t and w / t >= 0.7 else ("◐" if w else "○")
+                A(row(f"      {mark} {e}", f"{w}/{t}"))
+
+    rc = analysis.get("record")
+    if rc and rc.get("fam_files"):
+        A("")
+        A("── '기록으로 남기기' 가 가능한가 (3편 핵심) ─────────")
+        A("  파일은 지우되 썸네일 요약을 남기는 것이 3편의 발명입니다.")
+        A("  전체 썸네일 성공률이 아니라 **가족에 속한 파일** 을 봐야 합니다.")
+        n = rc["fam_files"]
+        A(row("  가족에 속한 파일", f"{n:,} 개"))
+        A(row("  ★ 썸네일이 나오는 것",
+              f"{rc['covered']:,} 개 ({rc['covered']/max(n,1)*100:.0f}%)"))
+        if rc["failed"]:
+            A(row("    안 나오는 것", f"{rc['failed']:,} 개"))
+        if rc["unknown"]:
+            A(row("    확인 못 한 것", f"{rc['unknown']:,} 개"))
+        if rc["bad_in_fams"]:
+            A("    가족 안에서 썸네일이 안 나오는 확장자:")
+            for e, n2 in rc["bad_in_fams"]:
+                A(row(f"      {e}", f"{n2:,} 개"))
+
+    vl = analysis.get("vols")
+    if vl:
+        A("")
+        A("── 볼륨과 링크 (이동 설계) ─────────────────────────")
+        A(row("  볼륨 수", f"{vl['volumes']} 개"))
+        if vl["on_other_volume"]:
+            A(row("  ⚠ 다른 볼륨에 있는 파일",
+                  f"{vl['on_other_volume']:,} 개 — 볼륨을 넘는 이동은 "
+                  "복사+삭제라 느리고 위험합니다"))
+        if vl["hardlinked"]:
+            A(row("  ⚠ 하드링크된 파일",
+                  f"{vl['hardlinked']:,} 개 · {gb(vl['hardlink_bytes'])} — "
+                  "하나를 지워도 공간이 안 늘어납니다"))
+        if not vl["on_other_volume"] and not vl["hardlinked"]:
+            A("  모두 한 볼륨 · 하드링크 없음 (이동 설계가 단순합니다)")
+
+    iv = analysis.get("invsize")
+    if iv:
+        A("")
+        A(row("인벤토리 DB 예상 크기",
+              f"{iv['est_bytes']/2**20:.0f} MB "
+              f"({iv['files']:,}개 × 약 400바이트)"))
+
+    sp = analysis.get("spot")
+    if sp and sp.get("checked"):
+        A("")
+        A("── Spotlight 가 들고 있는 것 (아직 안 쓰는 증거) ────")
+        c = sp["checked"]
+        A(row("  표본", f"{c:,} 개"))
+        A(row("  ★ 어디서 받았는지 (WhereFroms)",
+              f"{sp['with_wherefrom']:,} 개 "
+              f"({sp['with_wherefrom']/max(c,1)*100:.0f}%) "
+              "← 다운로드 폴더 분류의 결정적 증거"))
+        A(row("  ★ 마지막으로 연 날 (LastUsed)",
+              f"{sp['with_lastused']:,} 개 "
+              f"({sp['with_lastused']/max(c,1)*100:.0f}%) "
+              "← 지금은 '수정 시각' 만 봄"))
+        if sp.get("with_usecount") is not None:
+            A(row("  몇 번 열었는지 (UseCount)",
+                  f"{sp['with_usecount']:,} 개 "
+                  f"({sp['with_usecount']/max(c,1)*100:.0f}%)"))
+        if not (sp["with_wherefrom"] or sp["with_lastused"]):
+            A("  ⚠ 셋 다 0입니다. Spotlight 가 이 파일들을 색인하지 않았거나")
+            A("     mdls 를 못 부른 것입니다. 아래는 실제 출력 앞부분입니다:")
+            for ln in (sp.get("raw_sample") or "(비어 있음)").split("\n")[:6]:
+                A(f"      {ln[:70]}")
+        if sp["domains"]:
+            A("    많이 받은 곳:")
+            for d, n in sp["domains"].most_common(6):
+                A(f"      {d:<38} {n:,}")
+
+    est = analysis.get("scan_estimate")
+    if est and est["rows"]:
+        A("")
+        A("── 제품 첫 스캔은 몇 분짜리인가 ─────────────────────")
+        A("  P0 는 표본만 봅니다. 제품은 전 파일을 봐야 합니다.")
+        A("  아래는 이 맥에서 전 파일에 적용했을 때의 추정입니다.")
+        A("")
+        for name, sec, n in est["rows"]:
+            A(row(f"    {name}", f"{fmt_dur(sec)}  ({n:,}개)"))
+        A(row("  ★ 첫 스캔 예상", fmt_dur(est["total_sec"])))
+        A("     (두 번째부터는 저장해 둔 것을 써서 몇 초입니다)")
+
+    dk = analysis.get("disk")
+    if dk:
+        A("")
+        A(row("디스크 여유", f"{gb(dk['free'])} / {gb(dk['total'])} "
+                            f"({dk['used_pct']:.0f}% 사용)"))
+        A("  (3편은 지운 것을 30일 보관합니다. 공간이 필요합니다)")
 
     # ── 판정
     A("")
@@ -3299,6 +4198,12 @@ def main():
     ap.add_argument("--max-files", type=int, default=400_000)
     ap.add_argument("--version", action="version",
                     version=f"p0_survey {VERSION}")
+    ap.add_argument("--label", default="",
+                    help="하시는 일 한 줄 (예: 그래픽 디자이너). "
+                         "리포트를 여러 대에서 모아 비교할 때 필요합니다")
+    ap.add_argument("--about", default="",
+                    help="이 맥으로 주로 무슨 일을 하시는지 자유롭게. "
+                         "우리가 통계로 추론한 것과 대조하는 데 씁니다")
     ap.add_argument("--share", action="store_true",
                     help="공유용 — 파일 이름·경로가 나오는 절을 빼고 "
                          "숫자만 담습니다. 채점표도 안 만듭니다")
@@ -3342,6 +4247,15 @@ def main():
     backups = log.run("자동 백업 찾기", lambda: probe_backups(sv.files))
     threed = log.run("3D 파일 세기", lambda: probe_3d(sv.files))
     counts = log.run("참조·한글·비어도비 세기", lambda: probe_counts(sv.files))
+    exts = log.run("확장자 세기", lambda: probe_extensions(sv.files))
+    fshape = log.run("폴더 모양 (2편 근거)",
+                     lambda: probe_folder_shape(sv.files, sv.root))
+    disk = probe_disk_room()
+    vols = log.run("볼륨·링크 확인",
+                   lambda: probe_volumes_and_links(sv.files, sv.root))
+    invsize = estimate_inventory_size(sv.files)
+    rules = log.run("이미 만들어 둔 규칙 찾기 (2편)",
+                    lambda: probe_user_rules(sv.files, sv.root))
     blend = log.run(".blend 머리말", lambda: probe_blend(sv.files))
     vocab = log.run("낱말 빈도", lambda: build_token_vocab(sv.files))
     fprofiles = log.run("폴더 모양", lambda: profile_folders(sv.files, sv.btimes))
@@ -3383,6 +4297,16 @@ def main():
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
 
+    fam_shape = probe_family_shape(families, lineage)
+    links = None
+    if not args.no_probe:
+        links = log.run("링크 뽑기 가능한가 (안전 관문)",
+                        lambda: probe_link_extraction(sv.files))
+    if not args.no_probe:
+        spot = log.run("Spotlight 메타데이터 (표본)",
+                       lambda: probe_spotlight_meta(sv.files))
+    else:
+        spot = None
     grades = grade_families(sv.files, dups, families, lineage,
                             (phash or {}).get("families"))
     validity = measure_signal_validity(psd, lineage)
@@ -3399,13 +4323,19 @@ def main():
         "lineage": lineage, "family_cmp": family_cmp, "psd": psd,
         "thumbs": thumbs, "phash": phash, "ai": ai,
         "backups": backups, "threed": threed, "blend": blend,
-        "counts": counts, "vocab": vocab,
+        "counts": counts, "vocab": vocab, "exts": exts,
+        "fshape": fshape, "fam_shape": fam_shape, "spot": spot,
+        "disk": disk, "links": links, "vols": vols, "invsize": invsize,
+        "rules": rules,
+        "record": probe_record_feasibility(families, lineage, thumbs),
+        "label": args.label, "about": args.about,
         "ownership": ownership,
         "profiles": fprofiles, "unusual": unusual,
         "steplog": log,
         "cache": cache,
     }
 
+    analysis["scan_estimate"] = estimate_product_scan(log, sv.files)
     cache.save()
     report = build_report(env, sv, analysis, time.time() - t0,
                           share=args.share)
